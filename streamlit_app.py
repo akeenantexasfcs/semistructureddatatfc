@@ -8,6 +8,7 @@ import streamlit as st
 import pandas as pd
 import io
 import json
+import openpyxl
 from openpyxl.styles import PatternFill, Font, Border, Side, Alignment
 from openpyxl.utils import get_column_letter
 
@@ -24,8 +25,16 @@ def safe_numeric_convert(value):
 
 def process_excel_to_json(df_raw):
     """Convert semi-structured Excel to JSON format"""
-    # First row has the category
-    category = str(df_raw.iloc[0, 0]).strip()
+    # Find the quality row
+    quality_row = None
+    for idx, row in df_raw.iterrows():
+        if 'Quality' in str(row.iloc[0]):
+            quality_row = idx
+            category = str(row.iloc[0]).strip()
+            break
+    
+    if quality_row is None:
+        raise ValueError("Could not find Quality category")
     
     # Initialize structure
     json_data = {
@@ -33,12 +42,16 @@ def process_excel_to_json(df_raw):
         "entries": []
     }
     
+    # Start processing after header row
+    header_row = quality_row + 1
+    data_start = header_row + 1
+    
     # Variables to track current parent and subcategory
     current_parent_entry = None
     current_subcategory_entry = None
     
-    # Process rows starting from row 2
-    for i in range(1, len(df_raw)):
+    # Process rows
+    for i in range(data_start, len(df_raw)):
         row = df_raw.iloc[i]
         
         # Skip empty rows
@@ -56,16 +69,6 @@ def process_excel_to_json(df_raw):
             }
             json_data["entries"].append(current_parent_entry)
             current_subcategory_entry = None
-            continue
-        
-        # Check for subcategory
-        if "REVOLVER" in col_name_term.upper():
-            current_subcategory_entry = {
-                "name": current_parent_entry["name"] if current_parent_entry else "",
-                "subCategory": col_name_term,
-                "entries": []
-            }
-            json_data["entries"].append(current_subcategory_entry)
             continue
         
         # Check for metrics
@@ -90,9 +93,7 @@ def process_excel_to_json(df_raw):
             "metrics": metrics
         }
         
-        if current_subcategory_entry:
-            current_subcategory_entry["entries"].append(entry_dict)
-        elif current_parent_entry:
+        if current_parent_entry:
             current_parent_entry.update(entry_dict)
         else:
             json_data["entries"].append({
@@ -104,145 +105,123 @@ def process_excel_to_json(df_raw):
 
 def create_excel_from_json(json_data):
     """Create formatted Excel from JSON data"""
-    output = io.BytesIO()
-    try:
-        with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            workbook = writer.book
-            worksheet = workbook.active  # Use active sheet
-            worksheet.title = 'Sheet1'   # Rename it
-            
-            # Headers
-            headers = [
-                "Name/Term", "LGD", "% RR Used", "% AGG Used", "Used",
-                "Available", "Total Exposure", "% TE of RR", "% TE of AGG"
-            ]
-            
-            # Row 1: Category
-            worksheet.cell(row=1, column=1, value=json_data["category"])
-            worksheet.cell(row=1, column=1).font = Font(bold=True)
-            
-            # Row 2: Headers
-            for col_idx, header in enumerate(headers, start=1):
-                cell = worksheet.cell(row=2, column=col_idx, value=header)
-                cell.font = Font(bold=True)
-            
-            # Styles
-            yellow_fill = PatternFill(start_color='FFEB9C',
-                                    end_color='FFEB9C',
-                                    fill_type='solid')
-            thin_border = Border(
-                left=Side(style='thin'),
-                right=Side(style='thin'),
-                top=Side(style='thin'),
-                bottom=Side(style='thin')
-            )
-            
-            current_row = 3
-            
-            def write_data_row(row_num, term, lgd, metrics, indent=0):
-                # Term
-                worksheet.cell(row=row_num, column=1, value=(" " * indent) + (term or ""))
-                # LGD
-                worksheet.cell(row=row_num, column=2, value=lgd)
-                
-                # Metrics
-                if metrics.get("percentRRUsed") is not None:
-                    cell = worksheet.cell(row=row_num, column=3, value=metrics["percentRRUsed"] / 100)
-                    cell.number_format = '0.00%'
-                if metrics.get("percentAGGUsed") is not None:
-                    cell = worksheet.cell(row=row_num, column=4, value=metrics["percentAGGUsed"] / 100)
-                    cell.number_format = '0.00%'
-                if metrics.get("used") is not None:
-                    cell = worksheet.cell(row=row_num, column=5, value=metrics["used"])
-                    cell.number_format = '#,##0'
-                if metrics.get("available") is not None:
-                    cell = worksheet.cell(row=row_num, column=6, value=metrics["available"])
-                    cell.number_format = '#,##0'
-                if metrics.get("totalExposure") is not None:
-                    cell = worksheet.cell(row=row_num, column=7, value=metrics["totalExposure"])
-                    cell.number_format = '#,##0'
-                if metrics.get("percentTERR") is not None:
-                    cell = worksheet.cell(row=row_num, column=8, value=metrics["percentTERR"] / 100)
-                    cell.number_format = '0.00%'
-                if metrics.get("percentTEAGG") is not None:
-                    cell = worksheet.cell(row=row_num, column=9, value=metrics["percentTEAGG"] / 100)
-                    cell.number_format = '0.00%'
-            
-            for entry in json_data["entries"]:
-                name = entry.get("name", "")
-                sub_cat = entry.get("subCategory", "")
-                
-                if sub_cat:
-                    # Write parent with subcategory
-                    row_cell = worksheet.cell(row=current_row, column=1, value=name + " - " + sub_cat)
-                    row_cell.fill = yellow_fill
-                    current_row += 1
-                    
-                    # Write sub-entries
-                    for sub_entry in entry["entries"]:
-                        write_data_row(
-                            current_row,
-                            sub_entry.get("term"),
-                            sub_entry.get("lgd"),
-                            sub_entry.get("metrics", {}),
-                            indent=2
-                        )
-                        current_row += 1
-                else:
-                    if "entries" in entry and isinstance(entry["entries"], list):
-                        # Write parent name
-                        if name:
-                            parent_cell = worksheet.cell(row=current_row, column=1, value=name)
-                            parent_cell.fill = yellow_fill
-                            current_row += 1
-                        
-                        # Write sub-entries
-                        for sub_entry in entry["entries"]:
-                            write_data_row(
-                                current_row,
-                                sub_entry.get("term"),
-                                sub_entry.get("lgd"),
-                                sub_entry.get("metrics", {}),
-                                indent=2
-                            )
-                            current_row += 1
-                    else:
-                        # Handle single entry
-                        if name and not entry.get("term"):
-                            parent_cell = worksheet.cell(row=current_row, column=1, value=name)
-                            parent_cell.fill = yellow_fill
-                            current_row += 1
-                        
-                        if entry.get("term"):
-                            write_data_row(
-                                current_row,
-                                entry["term"],
-                                entry.get("lgd", ""),
-                                entry.get("metrics", {}),
-                                indent=2
-                            )
-                            current_row += 1
-            
-            # Set column widths
-            worksheet.column_dimensions['A'].width = 40
-            worksheet.column_dimensions['B'].width = 10
-            for col_idx in range(3, 10):
-                worksheet.column_dimensions[get_column_letter(col_idx)].width = 15
-            
-            # Apply borders and alignment
-            for row_cells in worksheet.iter_rows(min_row=2, max_row=current_row - 1, min_col=1, max_col=9):
-                for cell in row_cells:
-                    cell.border = thin_border
-                    if cell.column in [3,4,5,6,7,8,9]:
-                        cell.alignment = Alignment(horizontal='right')
-                    else:
-                        cell.alignment = Alignment(horizontal='left')
-            
-        output.seek(0)
-        return output
+    # First create a temporary DataFrame to initialize the Excel file
+    df_temp = pd.DataFrame(columns=[
+        "Name/Term", "LGD", "% RR Used", "% AGG Used", "Used",
+        "Available", "Total Exposure", "% TE of RR", "% TE of AGG"
+    ])
     
-    except Exception as e:
-        raise Exception(f"Error creating Excel file: {str(e)}")
+    # Create Excel file with the temporary DataFrame
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df_temp.to_excel(writer, sheet_name='Sheet1', index=False)
+        workbook = writer.book
+        worksheet = workbook['Sheet1']
+        
+        # Row 1: Category
+        worksheet.insert_rows(1)
+        worksheet.cell(row=1, column=1, value=json_data["category"])
+        worksheet.cell(row=1, column=1).font = Font(bold=True)
+        
+        # Styles
+        yellow_fill = PatternFill(start_color='FFEB9C',
+                                end_color='FFEB9C',
+                                fill_type='solid')
+        thin_border = Border(
+            left=Side(style='thin'),
+            right=Side(style='thin'),
+            top=Side(style='thin'),
+            bottom=Side(style='thin')
+        )
+        
+        current_row = 3  # Start after header row
+        
+        def write_data_row(row_num, term, lgd, metrics, indent=0):
+            # Term
+            cell = worksheet.cell(row=row_num, column=1, value=(" " * indent) + (term or ""))
+            cell.alignment = Alignment(horizontal='left')
+            
+            # LGD
+            cell = worksheet.cell(row=row_num, column=2, value=lgd)
+            cell.alignment = Alignment(horizontal='center')
+            
+            # Metrics
+            if metrics.get("percentRRUsed") is not None:
+                cell = worksheet.cell(row=row_num, column=3, value=metrics["percentRRUsed"] / 100)
+                cell.number_format = '0.00%'
+                cell.alignment = Alignment(horizontal='right')
+                
+            if metrics.get("percentAGGUsed") is not None:
+                cell = worksheet.cell(row=row_num, column=4, value=metrics["percentAGGUsed"] / 100)
+                cell.number_format = '0.00%'
+                cell.alignment = Alignment(horizontal='right')
+                
+            if metrics.get("used") is not None:
+                cell = worksheet.cell(row=row_num, column=5, value=metrics["used"])
+                cell.number_format = '#,##0'
+                cell.alignment = Alignment(horizontal='right')
+                
+            if metrics.get("available") is not None:
+                cell = worksheet.cell(row=row_num, column=6, value=metrics["available"])
+                cell.number_format = '#,##0'
+                cell.alignment = Alignment(horizontal='right')
+                
+            if metrics.get("totalExposure") is not None:
+                cell = worksheet.cell(row=row_num, column=7, value=metrics["totalExposure"])
+                cell.number_format = '#,##0'
+                cell.alignment = Alignment(horizontal='right')
+                
+            if metrics.get("percentTERR") is not None:
+                cell = worksheet.cell(row=row_num, column=8, value=metrics["percentTERR"] / 100)
+                cell.number_format = '0.00%'
+                cell.alignment = Alignment(horizontal='right')
+                
+            if metrics.get("percentTEAGG") is not None:
+                cell = worksheet.cell(row=row_num, column=9, value=metrics["percentTEAGG"] / 100)
+                cell.number_format = '0.00%'
+                cell.alignment = Alignment(horizontal='right')
+        
+        # Write data
+        for entry in json_data["entries"]:
+            name = entry.get("name", "")
+            
+            # Write parent name
+            if name:
+                parent_cell = worksheet.cell(row=current_row, column=1, value=name)
+                parent_cell.fill = yellow_fill
+                parent_cell.font = Font(bold=True)
+                for col in range(2, 10):
+                    cell = worksheet.cell(row=current_row, column=col)
+                    cell.fill = yellow_fill
+                current_row += 1
+            
+            # Write data row
+            if entry.get("term"):
+                write_data_row(
+                    current_row,
+                    entry.get("term"),
+                    entry.get("lgd", ""),
+                    entry.get("metrics", {}),
+                    indent=2 if name else 0
+                )
+                current_row += 1
+        
+        # Set column widths
+        worksheet.column_dimensions['A'].width = 40
+        worksheet.column_dimensions['B'].width = 10
+        for col_idx in range(3, 10):
+            worksheet.column_dimensions[get_column_letter(col_idx)].width = 15
+        
+        # Apply borders and make headers bold
+        for row in worksheet.iter_rows(min_row=1, max_row=current_row-1, min_col=1, max_col=9):
+            for cell in row:
+                cell.border = thin_border
+                if cell.row == 2:  # Header row
+                    cell.font = Font(bold=True)
+                    cell.alignment = Alignment(horizontal='center')
+    
+    output.seek(0)
+    return output
 
 def main():
     st.title("Excel PD Sheet Processor")
