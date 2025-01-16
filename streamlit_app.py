@@ -12,7 +12,7 @@ from openpyxl.styles import PatternFill, Font, Border, Side
 from openpyxl.utils import get_column_letter
 
 def create_styled_excel(processed_data):
-    """Create Excel file with matching styles from the screenshot"""
+    """Create Excel file with matching styles from the screenshot."""
     output = io.BytesIO()
     
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
@@ -76,9 +76,8 @@ def create_styled_excel(processed_data):
             
             # Define styles
             yellow_fill = PatternFill(start_color='FFEB9C',
-                                    end_color='FFEB9C',
-                                    fill_type='solid')
-            
+                                      end_color='FFEB9C',
+                                      fill_type='solid')
             thin_border = Border(
                 left=Side(style='thin'),
                 right=Side(style='thin'),
@@ -87,56 +86,72 @@ def create_styled_excel(processed_data):
             )
             
             # Apply formatting
-            for row_idx, row in enumerate(rows, start=3):  # Start after title and header
+            for row_idx, row in enumerate(rows, start=3):  # Start after title + header
                 # Highlight company rows
-                if row['LGD'] == '':  # This is a company row
+                if row['LGD'] == '':  # Company row (LGD empty)
                     for col in range(1, worksheet.max_column + 1):
                         cell = worksheet.cell(row=row_idx, column=col)
                         cell.fill = yellow_fill
                         cell.font = Font(bold=True)
                 
-                # Apply number formatting
-                if row['LGD']:  # This is a data row
-                    # Format percentages
-                    for col in [3, 4, 8, 9]:  # Percentage columns
+                # Data row
+                else:
+                    # Format percentages in columns 3, 4, 8, 9
+                    for col in [3, 4, 8, 9]:
                         cell = worksheet.cell(row=row_idx, column=col)
                         cell.number_format = '0.00%'
                     
-                    # Format numbers
-                    for col in [5, 6, 7]:  # Number columns
+                    # Format numbers in columns 5, 6, 7
+                    for col in [5, 6, 7]:
                         cell = worksheet.cell(row=row_idx, column=col)
                         cell.number_format = '#,##0'
             
             # Apply borders to all cells
-            for row in worksheet.iter_rows(min_row=1, max_row=len(rows)+2):
+            for row in worksheet.iter_rows(min_row=1, max_row=len(rows) + 2):
                 for cell in row:
                     cell.border = thin_border
             
             # Adjust column widths
             for col in worksheet.columns:
                 max_length = 0
-                column = get_column_letter(col[0].column)
+                column_letter = get_column_letter(col[0].column)
                 for cell in col:
                     try:
                         if len(str(cell.value)) > max_length:
                             max_length = len(str(cell.value))
-                    except:
+                    except Exception:
                         pass
-                worksheet.column_dimensions[column].width = min(max_length + 2, 30)
+                worksheet.column_dimensions[column_letter].width = min(max_length + 2, 30)
 
     output.seek(0)
     return output
 
 def main():
     st.title("Excel PD Sheet Processor")
-    # ... rest of the main function remains the same ...
-    # Just replace the Excel export part with:
     
-    excel_data = create_styled_excel(processed_data)
-    st.download_button(
-        label="Download Formatted Excel",
-        data=excel_data,
-        file_name="formatted_data.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
+    # File uploader: user can upload the JSON data
+    uploaded_file = st.file_uploader("Upload JSON file", type=["json"])
+    
+    if uploaded_file is not None:
+        try:
+            processed_data = json.load(uploaded_file)
+        except json.JSONDecodeError as e:
+            st.error(f"Could not decode JSON: {str(e)}")
+            return
+        
+        # Generate the styled Excel bytes
+        excel_data = create_styled_excel(processed_data)
+        
+        # Provide a download button
+        st.download_button(
+            label="Download Formatted Excel",
+            data=excel_data,
+            file_name="formatted_data.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+    else:
+        st.write("Please upload a JSON file to proceed.")
+
+if __name__ == "__main__":
+    main()
 
