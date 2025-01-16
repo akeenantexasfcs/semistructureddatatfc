@@ -34,31 +34,71 @@ def excel_to_json(df_raw):
             "entries": []
         }
         
-        # Skip headers and PD row
-        current_entry = None
-        for idx, row in df_raw.iloc[2:].iterrows():
+        current_parent = None
+        i = 2  # Skip header rows
+        
+        while i < len(df_raw):
+            row = df_raw.iloc[i]
+            
             # Skip empty rows
             if row.isna().all():
+                i += 1
                 continue
-                
+            
             name_term = str(row.iloc[0]).strip() if pd.notna(row.iloc[0]) else ""
             lgd = str(row.iloc[1]).strip() if pd.notna(row.iloc[1]) else ""
             
             # Skip subtotal rows
             if name_term.lower().startswith('sub total'):
+                i += 1
                 continue
             
-            # Parent row (company name)
-            if name_term and not lgd:
-                current_entry = {
+            # Check if this is a parent row (company name)
+            if name_term and not lgd and not row.iloc[2:].notna().any():
+                current_parent = {
                     "name": name_term,
-                    "term": None,
-                    "lgd": None,
-                    "metrics": None,
                     "entries": []
                 }
-                json_data["entries"].append(current_entry)
+                json_data["entries"].append(current_parent)
+                i += 1
                 continue
+            
+            # Process term row with data
+            if pd.notna(row.iloc[2]):  # Has metrics
+                metrics = {
+                    "percentRRUsed": safe_numeric_convert(row.iloc[2]),
+                    "percentAGGUsed": safe_numeric_convert(row.iloc[3]),
+                    "used": safe_numeric_convert(row.iloc[4]),
+                    "available": safe_numeric_convert(row.iloc[5]),
+                    "totalExposure": safe_numeric_convert(row.iloc[6]),
+                    "percentTERR": safe_numeric_convert(row.iloc[7]),
+                    "percentTEAGG": safe_numeric_convert(row.iloc[8])
+                }
+                
+                entry = {
+                    "term": name_term,
+                    "lgd": lgd,
+                    "metrics": metrics
+                }
+                
+                if current_parent:
+                    current_parent["entries"].append(entry)
+                else:
+                    # Standalone entry if no parent
+                    json_data["entries"].append({
+                        "name": "",
+                        "entries": [entry]
+                    })
+            
+            i += 1
+        
+        # Remove any entries without data
+        json_data["entries"] = [
+            entry for entry in json_data["entries"]
+            if entry["entries"]  # Only keep entries that have child entries
+        ]
+        
+        return json_data
             
             # Data row
             if lgd:
