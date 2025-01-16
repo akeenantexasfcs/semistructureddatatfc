@@ -22,114 +22,192 @@ def safe_numeric_convert(value):
     except (ValueError, TypeError):
         return None
 
-def excel_to_json(df_raw):
-    """Convert semi-structured Excel to JSON format"""
-    try:
-        # Get PD Rating from first row
-        pd_rating = str(df_raw.iloc[0, 0]).strip()
+def process_excel_to_json(df_raw):
+    """
+    Convert semi-structured Excel to a JSON format that supports:
+      {
+        "category": "07 - Average Quality",
+        "entries": [
+          {
+            "name": "SLR Property I, LP",
+            "term": "...",
+            "lgd": "...",
+            "metrics": {...}
+          },
+          {
+            "name": "FRIONA INDUSTRIES, L.P.",
+            "subCategory": "REVOLVER",
+            "entries": [
+              {
+                "term": "...",
+                "lgd": "...",
+                "metrics": {...}
+              },
+              ...
+            ]
+          }
+        ]
+      }
+    """
+    # 1. First row has the category
+    category = str(df_raw.iloc[0, 0]).strip()
+    
+    # 2. Initialize top-level structure
+    json_data = {
+        "category": category,
+        "entries": []
+    }
+    
+    # 3. Variables to keep track of the current parent and subcategory block
+    current_parent_entry = None
+    current_subcategory_entry = None
+    
+    # 4. Start iterating from row 2 onward (assuming row 1 is category)
+    for i in range(1, len(df_raw)):
+        row = df_raw.iloc[i]
         
-        # Initialize JSON structure
-        json_data = {
-            "category": pd_rating,
-            "entries": []
+        # Skip fully empty rows
+        if row.isna().all():
+            continue
+
+        # Extract columns safely (update indices to match your sheet structure)
+        # Example assumption:
+        #   Col A: name/term
+        #   Col B: LGD
+        #   Col C: %RRUsed
+        #   Col D: %AGGUsed
+        #   Col E: Used
+        #   Col F: Available
+        #   Col G: Total Exposure
+        #   Col H: %TE of RR
+        #   Col I: %TE of AGG
+        col_name_term = str(row.iloc[0]).strip() if pd.notna(row.iloc[0]) else ""
+        col_lgd = str(row.iloc[1]).strip() if pd.notna(row.iloc[1]) else ""
+        
+        # Decide how to interpret each row:
+        # -------------------------------------------------------------
+        #  (A) Parent row with no metrics (just "SLR Property I, LP")
+        #  (B) Simple row with metrics (Term + LGD + rest)
+        #  (C) A possible "subCategory" row
+        #  (D) Row under a subCategory
+        # -------------------------------------------------------------
+        
+        # This logic is purely an example. You need to define the exact rule(s)
+        # that help you differentiate "parent name" vs "subCategory" vs "actual data row."
+        
+        # (A) Check if row might be a new parent (has a name, but no LGD or other columns)
+        # or if col_name_term is obviously a 'headline' row from your data.
+        if col_name_term and not col_lgd:
+            # Start a new parent
+            current_parent_entry = {
+                "name": col_name_term,
+                # If you also have "subCategory" in the same row, parse it here
+                # "subCategory": ...
+            }
+            json_data["entries"].append(current_parent_entry)
+            # Reset subcategory
+            current_subcategory_entry = None
+            continue
+        
+        # (B) Check if row might be a subCategory row
+        # e.g., if your data has something like "REVOLVER" in col A or a dedicated column.
+        # For demonstration, let's assume anything that includes the word "REVOLVER" is a subCategory:
+        if "REVOLVER" in col_name_term.upper():
+            # Start or continue subCategory block
+            current_subcategory_entry = {
+                "name": current_parent_entry["name"] if current_parent_entry else "",
+                "subCategory": col_name_term,
+                "entries": []
+            }
+            # Append subCategory block to top-level (or to parent's entries if you prefer)
+            json_data["entries"].append(current_subcategory_entry)
+            continue
+        
+        # (C) If we have metrics in the row, parse them
+        percent_rr_used = safe_numeric_convert(row.iloc[2])
+        # If you see there's no numeric data at all, you might skip
+        if not any([percent_rr_used, safe_numeric_convert(row.iloc[3]), safe_numeric_convert(row.iloc[4])]):
+            # No real data - skip
+            continue
+        
+        # Build the metrics dict
+        metrics = {
+            "percentRRUsed": percent_rr_used,
+            "percentAGGUsed": safe_numeric_convert(row.iloc[3]),
+            "used": safe_numeric_convert(row.iloc[4]),
+            "available": safe_numeric_convert(row.iloc[5]),
+            "totalExposure": safe_numeric_convert(row.iloc[6]),
+            "percentTERR": safe_numeric_convert(row.iloc[7]),
+            "percentTEAGG": safe_numeric_convert(row.iloc[8])
         }
         
-        current_parent = None
-        i = 2  # Skip header rows
+        # (D) Now decide if this row belongs to the parent directly or a subCategory
+        entry_dict = {
+            "term": col_name_term,
+            "lgd": col_lgd,
+            "metrics": metrics
+        }
         
-        while i < len(df_raw):
-            row = df_raw.iloc[i]
+        if current_subcategory_entry:
+            # Add to the subCategory's "entries" array
+            current_subcategory_entry["entries"].append(entry_dict)
+        elif current_parent_entry:
+            # Just store as a "flat" object on the parent
+            # If you want each parent to also be "flat," you can do it this way:
+            #   parent entries might be: 
+            #     { "name": "...", "term": "...", "lgd": "...", "metrics": {...} }
+            #   or you can create an "entries" array on the parent
+            #   if you expect multiple terms under one parent.
             
-            # Skip empty rows
-            if row.isna().all():
-                i += 1
-                continue
-            
-            name_term = str(row.iloc[0]).strip() if pd.notna(row.iloc[0]) else ""
-            lgd = str(row.iloc[1]).strip() if pd.notna(row.iloc[1]) else ""
-            has_metrics = pd.notna(row.iloc[2])
-            
-            # Skip subtotal rows and empty rows
-            if name_term.lower().startswith('sub total') or not name_term:
-                i += 1
-                continue
-            
-            # If this is a parent row (company name)
-            if not lgd and not has_metrics:
-                current_parent = {
-                    "name": name_term,
-                    "entries": []
-                }
-                json_data["entries"].append(current_parent)
-            
-            # If this is a term row with data
-            elif has_metrics:
-                metrics = {
-                    "percentRRUsed": safe_numeric_convert(row.iloc[2]),
-                    "percentAGGUsed": safe_numeric_convert(row.iloc[3]),
-                    "used": safe_numeric_convert(row.iloc[4]),
-                    "available": safe_numeric_convert(row.iloc[5]),
-                    "totalExposure": safe_numeric_convert(row.iloc[6]),
-                    "percentTERR": safe_numeric_convert(row.iloc[7]),
-                    "percentTEAGG": safe_numeric_convert(row.iloc[8])
-                }
-                
-                entry = {
-                    "term": name_term,
-                    "lgd": lgd,
-                    "metrics": metrics
-                }
-                
-                if current_parent:
-                    current_parent["entries"].append(entry)
-                else:
-                    json_data["entries"].append({
-                        "name": "",
-                        "entries": [entry]
-                    })
-            
-            i += 1
-        
-        # Remove empty entries
-        json_data["entries"] = [
-            entry for entry in json_data["entries"]
-            if entry.get("entries")
-        ]
-        
-        return json_data
-        
-    except Exception as e:
-        raise Exception(f"Error converting to JSON: {str(e)}")
-
-def json_to_excel(json_data):
-    """Create formatted Excel from JSON data"""
-    output = io.BytesIO()
+            # For example, if your parent can have multiple lines:
+            #   current_parent_entry.setdefault("entries", []).append(entry_dict)
+            # or if each parent can have only one line, do:
+            current_parent_entry.update(entry_dict)
+        else:
+            # If there's no parent, just push directly at the top level
+            json_data["entries"].append({
+                "name": "",
+                **entry_dict
+            })
     
+    return json_data
+
+
+def create_excel_from_json(json_data):
+    """
+    Create a clean tabular Excel from the JSON data.
+    """
+    output = io.BytesIO()
     try:
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
             workbook = writer.book
             worksheet = workbook.create_sheet('Sheet1')
             
-            # Write headers
-            headers = ['Name/Term', 'LGD', '% RR Used', '% AGG Used', 'Used', 
-                      'Available', 'Total Exposure', '% TE of RR', '% TE of AGG']
+            # Delete default "Sheet" created by openpyxl if needed
+            default_sheet = workbook["Sheet"]
+            workbook.remove(default_sheet)
             
-            # Write PD header
-            cell = worksheet.cell(row=1, column=1, value='PD')
-            cell.font = Font(bold=True)
+            # Headers
+            headers = [
+                "Name/Term", "LGD", "% RR Used", "% AGG Used", "Used",
+                "Available", "Total Exposure", "% TE of RR", "% TE of AGG"
+            ]
             
-            # Write column headers
-            for col, header in enumerate(headers, 1):
-                cell = worksheet.cell(row=2, column=col, value=header)
+            # Row 1: Category
+            worksheet.cell(row=1, column=1, value=json_data["category"])
+            worksheet.cell(row=1, column=1).font = Font(bold=True)
+            
+            # Row 2: Headers
+            for col_idx, header in enumerate(headers, start=1):
+                cell = worksheet.cell(row=2, column=col_idx, value=header)
                 cell.font = Font(bold=True)
-                cell.alignment = Alignment(horizontal='center')
             
-            # Write PD category
-            cell = worksheet.cell(row=3, column=1, value=json_data["category"])
-            cell.fill = PatternFill(start_color='FFEB9C', end_color='FFEB9C', fill_type='solid')
-            
-            # Styles
-            yellow_fill = PatternFill(start_color='FFEB9C', end_color='FFEB9C', fill_type='solid')
+            # Styling
+            yellow_fill = PatternFill(
+                start_color='FFEB9C',
+                end_color='FFEB9C',
+                fill_type='solid'
+            )
             thin_border = Border(
                 left=Side(style='thin'),
                 right=Side(style='thin'),
@@ -137,63 +215,124 @@ def json_to_excel(json_data):
                 bottom=Side(style='thin')
             )
             
-            current_row = 4
+            current_row = 3
             
-            # Write entries
-            for entry in json_data["entries"]:
-                # Write parent name if exists
-                if entry["name"]:
-                    cell = worksheet.cell(row=current_row, column=1, value=entry["name"])
-                    cell.fill = yellow_fill
-                    cell.font = Font(bold=True)
-                    current_row += 1
+            def write_data_row(row_num, term, lgd, metrics, indent=0):
+                # Term
+                worksheet.cell(row=row_num, column=1, value=(" " * indent) + (term or ""))
+                # LGD
+                worksheet.cell(row=row_num, column=2, value=lgd)
                 
-                # Write entries
-                for sub_entry in entry["entries"]:
-                    # Write term with indentation if under parent
-                    term = ("  " if entry["name"] else "") + sub_entry["term"]
-                    worksheet.cell(row=current_row, column=1, value=term)
-                    
-                    # LGD (center-aligned)
-                    lgd_cell = worksheet.cell(row=current_row, column=2, value=sub_entry["lgd"])
-                    lgd_cell.alignment = Alignment(horizontal='center')
-                    
-                    # Write metrics
-                    metrics = sub_entry["metrics"]
-                    
-                    # Percentages
-                    for col, key in [(3, "percentRRUsed"), (4, "percentAGGUsed"), 
-                                   (8, "percentTERR"), (9, "percentTEAGG")]:
-                        if metrics.get(key) is not None:
-                            cell = worksheet.cell(row=current_row, column=col, 
-                                               value=metrics[key] / 100)
-                            cell.number_format = '0.00%'
-                            cell.alignment = Alignment(horizontal='right')
-                    
-                    # Numbers
-                    for col, key in [(5, "used"), (6, "available"), (7, "totalExposure")]:
-                        if metrics.get(key) is not None:
-                            cell = worksheet.cell(row=current_row, column=col, 
-                                               value=metrics[key])
-                            cell.number_format = '#,##0'
-                            cell.alignment = Alignment(horizontal='right')
-                    
+                # RR Used
+                if metrics.get("percentRRUsed") is not None:
+                    cell = worksheet.cell(row=row_num, column=3, value=metrics["percentRRUsed"] / 100)
+                    cell.number_format = '0.00%'
+                # AGG Used
+                if metrics.get("percentAGGUsed") is not None:
+                    cell = worksheet.cell(row=row_num, column=4, value=metrics["percentAGGUsed"] / 100)
+                    cell.number_format = '0.00%'
+                # Used
+                if metrics.get("used") is not None:
+                    cell = worksheet.cell(row=row_num, column=5, value=metrics["used"])
+                    cell.number_format = '#,##0'
+                # Available
+                if metrics.get("available") is not None:
+                    cell = worksheet.cell(row=row_num, column=6, value=metrics["available"])
+                    cell.number_format = '#,##0'
+                # Total Exposure
+                if metrics.get("totalExposure") is not None:
+                    cell = worksheet.cell(row=row_num, column=7, value=metrics["totalExposure"])
+                    cell.number_format = '#,##0'
+                # % TE of RR
+                if metrics.get("percentTERR") is not None:
+                    cell = worksheet.cell(row=row_num, column=8, value=metrics["percentTERR"] / 100)
+                    cell.number_format = '0.00%'
+                # % TE of AGG
+                if metrics.get("percentTEAGG") is not None:
+                    cell = worksheet.cell(row=row_num, column=9, value=metrics["percentTEAGG"] / 100)
+                    cell.number_format = '0.00%'
+            
+            for entry in json_data["entries"]:
+                name = entry.get("name", "")
+                sub_cat = entry.get("subCategory", "")
+                
+                # If there's a subCategory, we might show the parent row with fill
+                if sub_cat:
+                    # Parent with subCategory means the actual data is in entry["entries"]
+                    # So first write the row for the parent + subCat, if you want that visible
+                    row_cell = worksheet.cell(row=current_row, column=1, value=name + " - " + sub_cat)
+                    row_cell.fill = yellow_fill
                     current_row += 1
+                    
+                    # Now write each sub-entry
+                    for sub_entry in entry["entries"]:
+                        write_data_row(
+                            current_row,
+                            sub_entry.get("term"),
+                            sub_entry.get("lgd"),
+                            sub_entry.get("metrics", {}),
+                            indent=2
+                        )
+                        current_row += 1
+                        
+                else:
+                    # If there's an "entries" array, this parent has multiple lines
+                    if "entries" in entry and isinstance(entry["entries"], list):
+                        # Write parent name row
+                        if name:
+                            parent_cell = worksheet.cell(row=current_row, column=1, value=name)
+                            parent_cell.fill = yellow_fill
+                            current_row += 1
+                        
+                        # Now sub-entries
+                        for sub_entry in entry["entries"]:
+                            write_data_row(
+                                current_row,
+                                sub_entry.get("term"),
+                                sub_entry.get("lgd"),
+                                sub_entry.get("metrics", {}),
+                                indent=2
+                            )
+                            current_row += 1
+                    else:
+                        # If it's a "flat" parent with direct metrics
+                        # or just a single data row
+                        # Write parent name if needed
+                        if name and not entry.get("term"):
+                            parent_cell = worksheet.cell(row=current_row, column=1, value=name)
+                            parent_cell.fill = yellow_fill
+                            current_row += 1
+                        
+                        # If there's also "term" in the same dict, write it
+                        if entry.get("term"):
+                            write_data_row(
+                                current_row,
+                                entry["term"],
+                                entry.get("lgd", ""),
+                                entry.get("metrics", {}),
+                                indent=2
+                            )
+                            current_row += 1
             
             # Set column widths
             worksheet.column_dimensions['A'].width = 40  # Name/Term
             worksheet.column_dimensions['B'].width = 10  # LGD
-            for i in range(3, len(headers) + 1):
-                worksheet.column_dimensions[get_column_letter(i)].width = 15
+            for col_idx in range(3, 10):
+                worksheet.column_dimensions[get_column_letter(col_idx)].width = 15
             
-            # Apply borders
-            for row in worksheet.iter_rows(min_row=2, max_row=current_row-1):
-                for cell in row:
+            # Border + alignment
+            for row_cells in worksheet.iter_rows(min_row=2, max_row=current_row - 1, min_col=1, max_col=9):
+                for cell in row_cells:
                     cell.border = thin_border
-        
+                    # Right-align numeric columns
+                    if cell.column in [3,4,5,6,7,8,9]:
+                        cell.alignment = Alignment(horizontal='right')
+                    else:
+                        cell.alignment = Alignment(horizontal='left')
+            
         output.seek(0)
         return output
-        
+    
     except Exception as e:
         raise Exception(f"Error creating Excel file: {str(e)}")
 
@@ -205,6 +344,7 @@ def main():
     
     if uploaded_file:
         try:
+            # Read all sheets
             excel_file = pd.ExcelFile(uploaded_file)
             sheet_names = excel_file.sheet_names
             
@@ -219,20 +359,17 @@ def main():
             if st.button("Process Selected Sheets"):
                 for sheet_name in selected_sheets:
                     try:
-                        # Read sheet without header
                         df_raw = pd.read_excel(uploaded_file, sheet_name=sheet_name, header=None)
                         
-                        # Convert to JSON
-                        json_data = excel_to_json(df_raw)
+                        # Convert to desired JSON
+                        json_data = process_excel_to_json(df_raw)
                         
-                        # Show JSON structure
+                        # Display JSON
                         st.write(f"JSON structure for sheet '{sheet_name}':")
                         st.json(json_data)
                         
-                        # Convert back to Excel
-                        excel_data = json_to_excel(json_data)
-                        
-                        # Provide download button
+                        # Create Excel to download
+                        excel_data = create_excel_from_json(json_data)
                         st.download_button(
                             label=f"Download {sheet_name}",
                             data=excel_data,
@@ -242,11 +379,8 @@ def main():
                         
                     except Exception as e:
                         st.error(f"Error processing sheet '{sheet_name}': {str(e)}")
-                        st.write("Please ensure the sheet follows the expected format.")
-                        
         except Exception as e:
             st.error(f"Error reading Excel file: {str(e)}")
-            st.write("Please ensure you've uploaded a valid Excel file (.xlsx or .xls).")
 
 if __name__ == "__main__":
     main()
