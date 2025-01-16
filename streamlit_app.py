@@ -148,6 +148,10 @@ def create_excel_from_json(json_data):
                 worksheet.append(row_data)
                 current_row += 1
 
+        # Ensure at least one sheet is visible
+        if not workbook.sheetnames:
+            workbook.create_sheet(title="Sheet1")
+
         # Adjust column widths
         for col_num in range(1, 10):
             worksheet.column_dimensions[get_column_letter(col_num)].width = 15
@@ -164,37 +168,35 @@ def main():
     if uploaded_file:
         try:
             excel_file = pd.ExcelFile(uploaded_file)
-            sheet_names = [sheet for sheet in excel_file.sheet_names if not sheet.startswith("_")]  # Skip hidden/system sheets
+            sheet_names = excel_file.sheet_names
 
-            if not sheet_names:
-                st.error("No visible sheets found in the workbook.")
-            else:
-                st.info(f"Found {len(sheet_names)} visible sheets in the workbook")
-                selected_sheets = st.multiselect(
-                    "Select sheets to process",
-                    sheet_names,
-                    default=sheet_names[0] if sheet_names else None
-                )
+            st.info(f"Found {len(sheet_names)} sheets in the workbook")
 
-                if st.button("Process Selected Sheets"):
-                    for sheet_name in selected_sheets:
-                        try:
-                            df_raw = pd.read_excel(uploaded_file, sheet_name=sheet_name, header=None)
+            selected_sheets = st.multiselect(
+                "Select sheets to process",
+                sheet_names,
+                default=sheet_names[0] if sheet_names else None
+            )
 
-                            # Convert to JSON
-                            json_data = process_excel_to_json(df_raw)
+            if st.button("Process Selected Sheets"):
+                for sheet_name in selected_sheets:
+                    try:
+                        df_raw = pd.read_excel(uploaded_file, sheet_name=sheet_name, header=None)
 
-                            # Create Excel
-                            excel_data = create_excel_from_json(json_data)
-                            st.download_button(
-                                label=f"Download {sheet_name}",
-                                data=excel_data,
-                                file_name=f"{sheet_name}_formatted.xlsx",
-                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                            )
+                        # Convert to JSON
+                        json_data = process_excel_to_json(df_raw)
 
-                        except Exception as e:
-                            st.error(f"Error processing sheet '{sheet_name}': {str(e)}")
+                        # Create Excel
+                        excel_data = create_excel_from_json(json_data)
+                        st.download_button(
+                            label=f"Download {sheet_name}",
+                            data=excel_data,
+                            file_name=f"{sheet_name}_formatted.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                        )
+
+                    except Exception as e:
+                        st.error(f"Error processing sheet '{sheet_name}': {str(e)}")
         except Exception as e:
             st.error(f"Error reading Excel file: {str(e)}")
 
