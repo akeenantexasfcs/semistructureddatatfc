@@ -34,9 +34,7 @@ def process_excel_to_json(df_raw):
             "entries": []
         }
         
-        current_parent = None
         i = 1  # Start after PD row
-        
         while i < len(df_raw):
             row = df_raw.iloc[i]
             
@@ -48,17 +46,8 @@ def process_excel_to_json(df_raw):
             name_term = str(row.iloc[0]).strip()
             lgd = str(row.iloc[1]).strip() if pd.notna(row.iloc[1]) else ""
             
-            # Check if this is a parent row (has name but no LGD)
-            if pd.notna(name_term) and (pd.isna(row.iloc[1]) or str(row.iloc[1]).strip() == ""):
-                current_parent = {
-                    "name": name_term,
-                    "entries": []
-                }
-                json_data["entries"].append(current_parent)
-                i += 1
-                continue
-            
-            # If we have numeric data, this is a data row
+            # Process row data if it has numeric values
+            metrics = None
             if pd.notna(row.iloc[2]):  # Check if % RR Used exists
                 metrics = {
                     "percentRRUsed": safe_numeric_convert(row.iloc[2]),
@@ -69,17 +58,25 @@ def process_excel_to_json(df_raw):
                     "percentTERR": safe_numeric_convert(row.iloc[7]),
                     "percentTEAGG": safe_numeric_convert(row.iloc[8])
                 }
-                
+            
+            # If it's a parent row (no LGD)
+            if name_term and not lgd:
+                json_data["entries"].append({
+                    "name": name_term,
+                    "entries": []
+                })
+            # If it's a data row
+            elif metrics:
                 entry = {
                     "term": name_term,
                     "lgd": lgd,
                     "metrics": metrics
                 }
                 
-                if current_parent:
-                    current_parent["entries"].append(entry)
+                # Add to last parent if exists, otherwise create new parent
+                if json_data["entries"] and json_data["entries"][-1].get("name"):
+                    json_data["entries"][-1]["entries"].append(entry)
                 else:
-                    # No parent, create new entry
                     json_data["entries"].append({
                         "name": "",
                         "entries": [entry]
@@ -88,7 +85,6 @@ def process_excel_to_json(df_raw):
             i += 1
         
         return json_data
-        
     except Exception as e:
         raise Exception(f"Error converting to JSON: {str(e)}")
 
@@ -116,7 +112,7 @@ def create_excel_from_json(json_data):
             cell = worksheet.cell(row=3, column=1, value=json_data["category"])
             cell.fill = PatternFill(start_color='FFEB9C', end_color='FFEB9C', fill_type='solid')
             
-            # Styles
+            # Define styles
             yellow_fill = PatternFill(start_color='FFEB9C', end_color='FFEB9C', fill_type='solid')
             thin_border = Border(
                 left=Side(style='thin'),
@@ -127,51 +123,50 @@ def create_excel_from_json(json_data):
             
             current_row = 4
             
-            # Write entries
-            for entry in json_data["entries"]:
-                if entry["name"]:
-                    # Write parent name
-                    cell = worksheet.cell(row=current_row, column=1, value=entry["name"])
+            # Write data
+            for parent_entry in json_data["entries"]:
+                # Write parent name if it exists
+                if parent_entry["name"]:
+                    cell = worksheet.cell(row=current_row, column=1, value=parent_entry["name"])
                     cell.fill = yellow_fill
                     current_row += 1
                 
-                # Write all sub-entries
-                for sub_entry in entry.get("entries", []):
-                    # Indent term if there's a parent
-                    term_value = ("  " if entry["name"] else "") + sub_entry["term"]
-                    term_cell = worksheet.cell(row=current_row, column=1, value=term_value)
-                    term_cell.alignment = Alignment(horizontal='left')
-                    
-                    # LGD
-                    lgd_cell = worksheet.cell(row=current_row, column=2, value=sub_entry["lgd"])
-                    lgd_cell.alignment = Alignment(horizontal='center')
-                    
-                    metrics = sub_entry["metrics"]
-                    
-                    # Percentages
-                    if metrics["percentRRUsed"] is not None:
-                        cell = worksheet.cell(row=current_row, column=3, value=metrics["percentRRUsed"] / 100)
-                        cell.number_format = '0.00%'
-                    if metrics["percentAGGUsed"] is not None:
-                        cell = worksheet.cell(row=current_row, column=4, value=metrics["percentAGGUsed"] / 100)
-                        cell.number_format = '0.00%'
-                    
-                    # Numbers
-                    for col, key in enumerate(['used', 'available', 'totalExposure'], 5):
-                        if metrics[key] is not None:
-                            cell = worksheet.cell(row=current_row, column=col, value=metrics[key])
-                            cell.number_format = '#,##0'
-                            cell.alignment = Alignment(horizontal='right')
-                    
-                    # TE Percentages
-                    if metrics["percentTERR"] is not None:
-                        cell = worksheet.cell(row=current_row, column=8, value=metrics["percentTERR"] / 100)
-                        cell.number_format = '0.00%'
-                    if metrics["percentTEAGG"] is not None:
-                        cell = worksheet.cell(row=current_row, column=9, value=metrics["percentTEAGG"] / 100)
-                        cell.number_format = '0.00%'
-                    
-                    current_row += 1
+                # Write child entries
+                if "entries" in parent_entry:
+                    for sub_entry in parent_entry["entries"]:
+                        # Write term with indentation if there's a parent
+                        indent = "  " if parent_entry["name"] else ""
+                        worksheet.cell(row=current_row, column=1, value=indent + sub_entry["term"])
+                        worksheet.cell(row=current_row, column=2, value=sub_entry["lgd"])
+                        
+                        # Write metrics
+                        metrics = sub_entry["metrics"]
+                        
+                        # Percentages with proper formatting
+                        for col, (key, format_str) in enumerate([
+                            ("percentRRUsed", "0.00%"),
+                            ("percentAGGUsed", "0.00%")
+                        ], 3):
+                            if metrics.get(key) is not None:
+                                cell = worksheet.cell(row=current_row, column=col, value=metrics[key] / 100)
+                                cell.number_format = format_str
+                                cell.alignment = Alignment(horizontal='right')
+                        
+                        # Numbers with comma formatting
+                        for col, key in enumerate(['used', 'available', 'totalExposure'], 5):
+                            if metrics.get(key) is not None:
+                                cell = worksheet.cell(row=current_row, column=col, value=metrics[key])
+                                cell.number_format = '#,##0'
+                                cell.alignment = Alignment(horizontal='right')
+                        
+                        # TE percentages
+                        for col, key in enumerate(['percentTERR', 'percentTEAGG'], 8):
+                            if metrics.get(key) is not None:
+                                cell = worksheet.cell(row=current_row, column=col, value=metrics[key] / 100)
+                                cell.number_format = '0.00%'
+                                cell.alignment = Alignment(horizontal='right')
+                        
+                        current_row += 1
             
             # Set column widths
             worksheet.column_dimensions['A'].width = 40  # Name/Term
@@ -183,48 +178,10 @@ def create_excel_from_json(json_data):
             for row in worksheet.iter_rows(min_row=2, max_row=current_row-1):
                 for cell in row:
                     cell.border = thin_border
-                    if cell.column > 2:  # Columns after LGD
-                        cell.alignment = Alignment(horizontal='right')
-        
-        output.seek(0)
-        return output
-        
-    except Exception as e:
-        raise Exception(f"Error creating Excel file: {str(e)}")
-                
-                # Write additional entries if they exist
-                for sub_entry in entry.get("entries", []):
-                    worksheet.cell(row=current_row, column=1, value=sub_entry["term"])
-                    worksheet.cell(row=current_row, column=2, value=sub_entry["lgd"])
-                    metrics = sub_entry["metrics"]
-                    worksheet.cell(row=current_row, column=3, value=f"{metrics['percentRRUsed']:.2f}%" if metrics.get('percentRRUsed') else "")
-                    worksheet.cell(row=current_row, column=4, value=f"{metrics['percentAGGUsed']:.2f}%" if metrics.get('percentAGGUsed') else "")
-                    worksheet.cell(row=current_row, column=5, value=metrics.get('used', ""))
-                    worksheet.cell(row=current_row, column=6, value=metrics.get('available', ""))
-                    worksheet.cell(row=current_row, column=7, value=metrics.get('totalExposure', ""))
-                    worksheet.cell(row=current_row, column=8, value=f"{metrics['percentTERR']:.2f}%" if metrics.get('percentTERR') else "")
-                    worksheet.cell(row=current_row, column=9, value=f"{metrics['percentTEAGG']:.2f}%" if metrics.get('percentTEAGG') else "")
-                    current_row += 1
-            
-            # Set column widths
-            worksheet.column_dimensions['A'].width = 40  # Name/Term
-            worksheet.column_dimensions['B'].width = 10  # LGD
-            for i in range(3, len(headers) + 1):
-                worksheet.column_dimensions[get_column_letter(i)].width = 15
-            
-            # Apply borders and alignment to data range
-            for row in worksheet.iter_rows(min_row=2, max_row=current_row-1, min_col=1, max_col=len(headers)):
-                for cell in row:
-                    cell.border = thin_border
-                    if isinstance(cell.value, str) and '%' in str(cell.value):
-                        cell.alignment = Alignment(horizontal='right')
-                    elif isinstance(cell.value, (int, float)):
-                        cell.alignment = Alignment(horizontal='right')
-                        cell.number_format = '#,##0'
-                    elif cell.column == 2:  # LGD column
+                    if cell.column == 2:  # LGD column
                         cell.alignment = Alignment(horizontal='center')
-                    else:
-                        cell.alignment = Alignment(horizontal='left')
+                    elif cell.column > 2:  # Numeric columns
+                        cell.alignment = Alignment(horizontal='right')
         
         output.seek(0)
         return output
@@ -266,7 +223,7 @@ def main():
                         st.write(f"JSON structure for sheet '{sheet_name}':")
                         st.json(json_data)
                         
-                        # Create clean Excel from JSON
+                        # Create formatted Excel from JSON
                         excel_data = create_excel_from_json(json_data)
                         
                         # Provide download button
