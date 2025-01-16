@@ -23,98 +23,84 @@ def safe_numeric_convert(value):
         return None
 
 def process_excel_to_json(df_raw):
-    """Convert semi-structured Excel to JSON format matching React component structure"""
-    try:
-        # Get PD category from first row
-        category = str(df_raw.iloc[0, 0]).strip()
+    """Convert semi-structured Excel to JSON format"""
+    # First row has the category
+    category = str(df_raw.iloc[0, 0]).strip()
+    
+    # Initialize structure
+    json_data = {
+        "category": category,
+        "entries": []
+    }
+    
+    # Variables to track current parent and subcategory
+    current_parent_entry = None
+    current_subcategory_entry = None
+    
+    # Process rows starting from row 2
+    for i in range(1, len(df_raw)):
+        row = df_raw.iloc[i]
         
-        # Initialize JSON structure
-        json_data = {
-            "category": category,
-            "entries": []
+        # Skip empty rows
+        if row.isna().all():
+            continue
+
+        # Extract columns
+        col_name_term = str(row.iloc[0]).strip() if pd.notna(row.iloc[0]) else ""
+        col_lgd = str(row.iloc[1]).strip() if pd.notna(row.iloc[1]) else ""
+        
+        # Check for parent row
+        if col_name_term and not col_lgd:
+            current_parent_entry = {
+                "name": col_name_term,
+            }
+            json_data["entries"].append(current_parent_entry)
+            current_subcategory_entry = None
+            continue
+        
+        # Check for subcategory
+        if "REVOLVER" in col_name_term.upper():
+            current_subcategory_entry = {
+                "name": current_parent_entry["name"] if current_parent_entry else "",
+                "subCategory": col_name_term,
+                "entries": []
+            }
+            json_data["entries"].append(current_subcategory_entry)
+            continue
+        
+        # Check for metrics
+        percent_rr_used = safe_numeric_convert(row.iloc[2])
+        if not any([percent_rr_used, safe_numeric_convert(row.iloc[3]), safe_numeric_convert(row.iloc[4])]):
+            continue
+        
+        # Build metrics
+        metrics = {
+            "percentRRUsed": percent_rr_used,
+            "percentAGGUsed": safe_numeric_convert(row.iloc[3]),
+            "used": safe_numeric_convert(row.iloc[4]),
+            "available": safe_numeric_convert(row.iloc[5]),
+            "totalExposure": safe_numeric_convert(row.iloc[6]),
+            "percentTERR": safe_numeric_convert(row.iloc[7]),
+            "percentTEAGG": safe_numeric_convert(row.iloc[8])
         }
         
-        current_parent = None
-        i = 1  # Start after PD row
+        entry_dict = {
+            "term": col_name_term,
+            "lgd": col_lgd,
+            "metrics": metrics
+        }
         
-        while i < len(df_raw):
-            row = df_raw.iloc[i]
-            
-            # Skip empty rows
-            if row.isna().all():
-                i += 1
-                continue
-            
-            name_term = str(row.iloc[0]).strip() if pd.notna(row.iloc[0]) else ""
-            lgd = str(row.iloc[1]).strip() if pd.notna(row.iloc[1]) else ""
-            
-            # If we have numeric data in the row
-            has_metrics = pd.notna(row.iloc[2])
-            
-            # Parent row detection (name but no LGD and no metrics)
-            if name_term and not lgd and not has_metrics:
-                current_parent = {
-                    "name": name_term,
-                    "term": "",
-                    "lgd": "",
-                    "metrics": {}
-                }
-                
-                # Check if next row indicates this is a REVOLVER section
-                if i + 1 < len(df_raw):
-                    next_row = df_raw.iloc[i + 1]
-                    next_term = str(next_row.iloc[0]).strip() if pd.notna(next_row.iloc[0]) else ""
-                    if "REVOLVER" in next_term.upper():
-                        current_parent["subCategory"] = "REVOLVER"
-                        current_parent["entries"] = []
-                        i += 1  # Skip the REVOLVER row
-                
-                json_data["entries"].append(current_parent)
-                i += 1
-                continue
-            
-            # Process data row
-            if has_metrics:
-                metrics = {
-                    "percentRRUsed": safe_numeric_convert(row.iloc[2]),
-                    "percentAGGUsed": safe_numeric_convert(row.iloc[3]),
-                    "used": safe_numeric_convert(row.iloc[4]),
-                    "available": safe_numeric_convert(row.iloc[5]),
-                    "totalExposure": safe_numeric_convert(row.iloc[6]),
-                    "percentTERR": safe_numeric_convert(row.iloc[7]),
-                    "percentTEAGG": safe_numeric_convert(row.iloc[8])
-                }
-                
-                # If we have a parent with subCategory
-                if current_parent and "subCategory" in current_parent:
-                    current_parent["entries"].append({
-                        "term": name_term,
-                        "lgd": lgd,
-                        "metrics": metrics
-                    })
-                # If we have a regular parent
-                elif current_parent and not current_parent["term"]:
-                    current_parent.update({
-                        "term": name_term,
-                        "lgd": lgd,
-                        "metrics": metrics
-                    })
-                # No parent, standalone entry
-                else:
-                    json_data["entries"].append({
-                        "name": "",
-                        "term": name_term,
-                        "lgd": lgd,
-                        "metrics": metrics
-                    })
-                    current_parent = None
-            
-            i += 1
-        
-        return json_data
-        
-    except Exception as e:
-        raise Exception(f"Error processing Excel: {str(e)}")
+        if current_subcategory_entry:
+            current_subcategory_entry["entries"].append(entry_dict)
+        elif current_parent_entry:
+            current_parent_entry.update(entry_dict)
+        else:
+            json_data["entries"].append({
+                "name": "",
+                **entry_dict
+            })
+    
+    return json_data
 
 def create_excel_from_json(json_data):
     """Create formatted Excel from JSON data"""
@@ -122,114 +108,136 @@ def create_excel_from_json(json_data):
     try:
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
             workbook = writer.book
-            if 'Sheet' in workbook.sheetnames:
-                workbook.remove(workbook['Sheet'])
-            worksheet = workbook.create_sheet('Data')
+            worksheet = workbook.active  # Use active sheet
+            worksheet.title = 'Sheet1'   # Rename it
             
             # Headers
-            headers = ['Name/Term', 'LGD', '% RR Used', '% AGG Used', 'Used', 
-                      'Available', 'Total Exposure', '% TE of RR', '% TE of AGG']
+            headers = [
+                "Name/Term", "LGD", "% RR Used", "% AGG Used", "Used",
+                "Available", "Total Exposure", "% TE of RR", "% TE of AGG"
+            ]
             
-            # Write category
-            worksheet.cell(row=1, column=1, value="PD")
-            worksheet.cell(row=2, column=1, value=json_data["category"])
+            # Row 1: Category
+            worksheet.cell(row=1, column=1, value=json_data["category"])
+            worksheet.cell(row=1, column=1).font = Font(bold=True)
             
-            # Write column headers
-            for col, header in enumerate(headers, 1):
-                cell = worksheet.cell(row=3, column=col, value=header)
+            # Row 2: Headers
+            for col_idx, header in enumerate(headers, start=1):
+                cell = worksheet.cell(row=2, column=col_idx, value=header)
                 cell.font = Font(bold=True)
             
             # Styles
-            yellow_fill = PatternFill(start_color='FFEB9C', end_color='FFEB9C', fill_type='solid')
+            yellow_fill = PatternFill(start_color='FFEB9C',
+                                    end_color='FFEB9C',
+                                    fill_type='solid')
+            thin_border = Border(
+                left=Side(style='thin'),
+                right=Side(style='thin'),
+                top=Side(style='thin'),
+                bottom=Side(style='thin')
+            )
             
-            current_row = 4
+            current_row = 3
             
-            # Write data
-            for entry in json_data["entries"]:
-                if entry["name"]:
-                    # Write parent name
-                    cell = worksheet.cell(row=current_row, column=1, value=entry["name"])
-                    cell.fill = yellow_fill
-                    cell.font = Font(bold=True)
-                    current_row += 1
+            def write_data_row(row_num, term, lgd, metrics, indent=0):
+                # Term
+                worksheet.cell(row=row_num, column=1, value=(" " * indent) + (term or ""))
+                # LGD
+                worksheet.cell(row=row_num, column=2, value=lgd)
                 
-                # Write entry data
-                if "entries" in entry:  # Has sub-entries
-                    for sub_entry in entry["entries"]:
-                        worksheet.cell(row=current_row, column=1, value=f"    {sub_entry['term']}")
-                        worksheet.cell(row=current_row, column=2, value=sub_entry["lgd"])
-                        metrics = sub_entry["metrics"]
-                        
-                        # Write metrics
-                        if metrics.get("percentRRUsed") is not None:
-                            cell = worksheet.cell(row=current_row, column=3, value=metrics["percentRRUsed"] / 100)
-                            cell.number_format = '0.00%'
-                        if metrics.get("percentAGGUsed") is not None:
-                            cell = worksheet.cell(row=current_row, column=4, value=metrics["percentAGGUsed"] / 100)
-                            cell.number_format = '0.00%'
-                        if metrics.get("used") is not None:
-                            cell = worksheet.cell(row=current_row, column=5, value=metrics["used"])
-                            cell.number_format = '#,##0'
-                        if metrics.get("available") is not None:
-                            cell = worksheet.cell(row=current_row, column=6, value=metrics["available"])
-                            cell.number_format = '#,##0'
-                        if metrics.get("totalExposure") is not None:
-                            cell = worksheet.cell(row=current_row, column=7, value=metrics["totalExposure"])
-                            cell.number_format = '#,##0'
-                        if metrics.get("percentTERR") is not None:
-                            cell = worksheet.cell(row=current_row, column=8, value=metrics["percentTERR"] / 100)
-                            cell.number_format = '0.00%'
-                        if metrics.get("percentTEAGG") is not None:
-                            cell = worksheet.cell(row=current_row, column=9, value=metrics["percentTEAGG"] / 100)
-                            cell.number_format = '0.00%'
-                        
-                        current_row += 1
-                elif entry["term"]:  # Single entry
-                    worksheet.cell(row=current_row, column=1, value=f"    {entry['term']}")
-                    worksheet.cell(row=current_row, column=2, value=entry["lgd"])
-                    metrics = entry["metrics"]
-                    
-                    # Write metrics
-                    if metrics.get("percentRRUsed") is not None:
-                        cell = worksheet.cell(row=current_row, column=3, value=metrics["percentRRUsed"] / 100)
-                        cell.number_format = '0.00%'
-                    if metrics.get("percentAGGUsed") is not None:
-                        cell = worksheet.cell(row=current_row, column=4, value=metrics["percentAGGUsed"] / 100)
-                        cell.number_format = '0.00%'
-                    if metrics.get("used") is not None:
-                        cell = worksheet.cell(row=current_row, column=5, value=metrics["used"])
-                        cell.number_format = '#,##0'
-                    if metrics.get("available") is not None:
-                        cell = worksheet.cell(row=current_row, column=6, value=metrics["available"])
-                        cell.number_format = '#,##0'
-                    if metrics.get("totalExposure") is not None:
-                        cell = worksheet.cell(row=current_row, column=7, value=metrics["totalExposure"])
-                        cell.number_format = '#,##0'
-                    if metrics.get("percentTERR") is not None:
-                        cell = worksheet.cell(row=current_row, column=8, value=metrics["percentTERR"] / 100)
-                        cell.number_format = '0.00%'
-                    if metrics.get("percentTEAGG") is not None:
-                        cell = worksheet.cell(row=current_row, column=9, value=metrics["percentTEAGG"] / 100)
-                        cell.number_format = '0.00%'
-                    
+                # Metrics
+                if metrics.get("percentRRUsed") is not None:
+                    cell = worksheet.cell(row=row_num, column=3, value=metrics["percentRRUsed"] / 100)
+                    cell.number_format = '0.00%'
+                if metrics.get("percentAGGUsed") is not None:
+                    cell = worksheet.cell(row=row_num, column=4, value=metrics["percentAGGUsed"] / 100)
+                    cell.number_format = '0.00%'
+                if metrics.get("used") is not None:
+                    cell = worksheet.cell(row=row_num, column=5, value=metrics["used"])
+                    cell.number_format = '#,##0'
+                if metrics.get("available") is not None:
+                    cell = worksheet.cell(row=row_num, column=6, value=metrics["available"])
+                    cell.number_format = '#,##0'
+                if metrics.get("totalExposure") is not None:
+                    cell = worksheet.cell(row=row_num, column=7, value=metrics["totalExposure"])
+                    cell.number_format = '#,##0'
+                if metrics.get("percentTERR") is not None:
+                    cell = worksheet.cell(row=row_num, column=8, value=metrics["percentTERR"] / 100)
+                    cell.number_format = '0.00%'
+                if metrics.get("percentTEAGG") is not None:
+                    cell = worksheet.cell(row=row_num, column=9, value=metrics["percentTEAGG"] / 100)
+                    cell.number_format = '0.00%'
+            
+            for entry in json_data["entries"]:
+                name = entry.get("name", "")
+                sub_cat = entry.get("subCategory", "")
+                
+                if sub_cat:
+                    # Write parent with subcategory
+                    row_cell = worksheet.cell(row=current_row, column=1, value=name + " - " + sub_cat)
+                    row_cell.fill = yellow_fill
                     current_row += 1
+                    
+                    # Write sub-entries
+                    for sub_entry in entry["entries"]:
+                        write_data_row(
+                            current_row,
+                            sub_entry.get("term"),
+                            sub_entry.get("lgd"),
+                            sub_entry.get("metrics", {}),
+                            indent=2
+                        )
+                        current_row += 1
+                else:
+                    if "entries" in entry and isinstance(entry["entries"], list):
+                        # Write parent name
+                        if name:
+                            parent_cell = worksheet.cell(row=current_row, column=1, value=name)
+                            parent_cell.fill = yellow_fill
+                            current_row += 1
+                        
+                        # Write sub-entries
+                        for sub_entry in entry["entries"]:
+                            write_data_row(
+                                current_row,
+                                sub_entry.get("term"),
+                                sub_entry.get("lgd"),
+                                sub_entry.get("metrics", {}),
+                                indent=2
+                            )
+                            current_row += 1
+                    else:
+                        # Handle single entry
+                        if name and not entry.get("term"):
+                            parent_cell = worksheet.cell(row=current_row, column=1, value=name)
+                            parent_cell.fill = yellow_fill
+                            current_row += 1
+                        
+                        if entry.get("term"):
+                            write_data_row(
+                                current_row,
+                                entry["term"],
+                                entry.get("lgd", ""),
+                                entry.get("metrics", {}),
+                                indent=2
+                            )
+                            current_row += 1
             
             # Set column widths
             worksheet.column_dimensions['A'].width = 40
             worksheet.column_dimensions['B'].width = 10
-            for i in range(3, len(headers) + 1):
-                worksheet.column_dimensions[get_column_letter(i)].width = 15
+            for col_idx in range(3, 10):
+                worksheet.column_dimensions[get_column_letter(col_idx)].width = 15
             
-            # Apply alignments
-            for row in worksheet.iter_rows(min_row=3, max_row=current_row-1):
-                for cell in row:
-                    if cell.column == 1:  # Name/Term
-                        cell.alignment = Alignment(horizontal='left')
-                    elif cell.column == 2:  # LGD
-                        cell.alignment = Alignment(horizontal='center')
-                    else:  # Numeric columns
+            # Apply borders and alignment
+            for row_cells in worksheet.iter_rows(min_row=2, max_row=current_row - 1, min_col=1, max_col=9):
+                for cell in row_cells:
+                    cell.border = thin_border
+                    if cell.column in [3,4,5,6,7,8,9]:
                         cell.alignment = Alignment(horizontal='right')
-        
+                    else:
+                        cell.alignment = Alignment(horizontal='left')
+            
         output.seek(0)
         return output
     
@@ -258,20 +266,13 @@ def main():
             if st.button("Process Selected Sheets"):
                 for sheet_name in selected_sheets:
                     try:
-                        # Read sheet without header
                         df_raw = pd.read_excel(uploaded_file, sheet_name=sheet_name, header=None)
                         
-                        # Convert to JSON structure
+                        # Convert to JSON
                         json_data = process_excel_to_json(df_raw)
                         
-                        # Display JSON for verification
-                        st.write(f"JSON structure for sheet '{sheet_name}':")
-                        st.json(json_data)
-                        
-                        # Create formatted Excel
+                        # Create Excel
                         excel_data = create_excel_from_json(json_data)
-                        
-                        # Provide download button
                         st.download_button(
                             label=f"Download {sheet_name}",
                             data=excel_data,
@@ -281,11 +282,8 @@ def main():
                         
                     except Exception as e:
                         st.error(f"Error processing sheet '{sheet_name}': {str(e)}")
-                        st.write(f"Please ensure sheet '{sheet_name}' follows the expected format.")
-                        
         except Exception as e:
             st.error(f"Error reading Excel file: {str(e)}")
-            st.write("Please ensure you've uploaded a valid Excel file (.xlsx or .xls).")
 
 if __name__ == "__main__":
     main()
