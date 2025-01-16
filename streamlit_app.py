@@ -25,8 +25,15 @@ def safe_numeric_convert(value):
 def process_pd_data(df_raw):
     """Process the PD sheet using fixed positions instead of searching"""
     try:
+        # Check if DataFrame has enough rows
+        if df_raw.shape[0] < 2:
+            raise ValueError("Excel sheet does not have enough rows. Expected PD in cell A2.")
+            
         # 1. Get category from cell A2 (index 1,0)
-        category = str(df_raw.iloc[1, 0]).strip()
+        try:
+            category = str(df_raw.iloc[1, 0]).strip()
+            if pd.isna(category) or category == "":
+                raise ValueError("No PD found in cell A2")
         
         # 2. Get headers from row 2 (index 2)
         headers = [
@@ -34,6 +41,10 @@ def process_pd_data(df_raw):
             'Used', 'Available', 'Total Exposure', '% TE of RR', '% TE of AGG'
         ]
         
+        # Check if we have enough rows for data
+        if df_raw.shape[0] < 4:  # Need at least 4 rows (0-based index: 0,1,2,3)
+            raise ValueError("Excel sheet does not have enough rows for data processing")
+            
         # 3. Create DataFrame from row 3 onwards
         df_data = df_raw.iloc[3:].copy()
         df_data.columns = headers
@@ -182,8 +193,19 @@ def main():
                     st.dataframe(preview_df)
                     
         except Exception as e:
-            st.error(f"Error: {str(e)}")
-            st.write("Please ensure the Excel file follows the expected format with PD in cell A2.")
+            error_msg = str(e)
+            st.error(f"Error: {error_msg}")
+            
+            # Provide more specific guidance based on the error
+            if "not have enough rows" in error_msg:
+                st.write("The Excel sheet appears to be empty or doesn't have enough rows. Please ensure:")
+                st.write("1. The PD is in cell A2")
+                st.write("2. Headers are in row 3")
+                st.write("3. Data starts from row 4")
+            elif "No PD found in cell A2" in error_msg:
+                st.write("Could not find PD information in cell A2. Please check the sheet format.")
+            else:
+                st.write("Please ensure the Excel file follows the expected format with PD in cell A2.")
 
 if __name__ == "__main__":
     main()
