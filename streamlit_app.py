@@ -7,6 +7,7 @@
 import streamlit as st
 import pandas as pd
 import io
+import json
 from openpyxl.styles import PatternFill, Font, Border, Side, Alignment
 from openpyxl.utils import get_column_letter
 
@@ -15,61 +16,87 @@ def safe_numeric_convert(value):
     if pd.isna(value):
         return None
     try:
-        # Remove commas and convert to float
         if isinstance(value, str):
-            value = value.replace(',', '')
+            value = value.replace(',', '').replace('%', '')
         return float(value)
     except (ValueError, TypeError):
         return None
 
-def process_pd_data(df_raw):
-    """Process the PD sheet using fixed positions instead of searching"""
+def process_excel_to_json(df_raw):
+    """Convert semi-structured Excel to JSON format"""
     try:
-        # Check if DataFrame has enough rows
-        if df_raw.shape[0] < 1:
-            raise ValueError("Excel sheet appears to be empty.")
+        # Get PD from first row (usually in A2)
+        pd_rating = str(df_raw.iloc[0, 0]).strip()
+        
+        # Initialize JSON structure
+        json_data = {
+            "category": pd_rating,
+            "entries": []
+        }
+        
+        current_parent = None
+        current_entry = None
+        
+        # Process rows starting from row 1
+        for idx, row in df_raw.iloc[1:].iterrows():
+            # Skip completely empty rows
+            if row.isna().all():
+                continue
+                
+            name_term = str(row.iloc[0]).strip()
+            lgd = str(row.iloc[1]).strip() if pd.notna(row.iloc[1]) else ""
             
-        # 1. Get headers from row 1 (index 0)
-        headers = [
-            'Name/Term', 'LGD', '% Used of RR', '% Used of AGG',
-            'Used', 'Available', 'Total Exposure', '% TE of RR', '% TE of AGG'
-        ]
+            # Check if this is a parent row (company name)
+            if pd.notna(name_term) and lgd == "":
+                current_parent = {
+                    "name": name_term,
+                    "term": "",  # Will be filled by next row
+                    "lgd": "",
+                    "metrics": {},
+                    "entries": []  # For multiple entries under same parent
+                }
+                json_data["entries"].append(current_parent)
+                continue
+            
+            # If we have numeric data, this is a data row
+            if pd.notna(row.iloc[2]):  # Check if % Used of RR exists
+                metrics = {
+                    "percentRRUsed": safe_numeric_convert(row.iloc[2]),
+                    "percentAGGUsed": safe_numeric_convert(row.iloc[3]),
+                    "used": safe_numeric_convert(row.iloc[4]),
+                    "available": safe_numeric_convert(row.iloc[5]),
+                    "totalExposure": safe_numeric_convert(row.iloc[6]),
+                    "percentTERR": safe_numeric_convert(row.iloc[7]),
+                    "percentTEAGG": safe_numeric_convert(row.iloc[8])
+                }
+                
+                # If we have a parent, this is a child entry
+                if current_parent:
+                    if current_parent["term"] == "":  # First entry
+                        current_parent["term"] = name_term
+                        current_parent["lgd"] = lgd
+                        current_parent["metrics"] = metrics
+                    else:  # Additional entries
+                        current_parent["entries"].append({
+                            "term": name_term,
+                            "lgd": lgd,
+                            "metrics": metrics
+                        })
+                else:  # No parent, create new entry
+                    json_data["entries"].append({
+                        "name": "",
+                        "term": name_term,
+                        "lgd": lgd,
+                        "metrics": metrics
+                    })
         
-        # 2. Create DataFrame from row 1 onwards (now it's all data)
-        df_data = df_raw.iloc[0:].copy()
-        df_data.columns = headers
-        
-        # 4. Drop completely empty rows
-        df_data.dropna(how='all', inplace=True)
-        
-        # 5. Process numeric columns
-        numeric_cols = ['% Used of RR', '% Used of AGG', 'Used', 
-                       'Available', 'Total Exposure', '% TE of RR', '% TE of AGG']
-        for col in numeric_cols:
-            df_data[col] = df_data[col].apply(safe_numeric_convert)
-        
-        # 6. Clean text columns
-        df_data['Name/Term'] = df_data['Name/Term'].fillna('').astype(str).str.strip()
-        df_data['LGD'] = df_data['LGD'].fillna('').astype(str).str.strip()
-        
-        # 7. Identify parent rows (rows where Name/Term is filled but LGD is empty)
-        parent_rows = df_data['Name/Term'].notna() & (df_data['LGD'].str.len() == 0)
-        
-        # 8. Create structured data for Excel formatting
-        structured_data = []
-        for idx, row in df_data.iterrows():
-            structured_data.append({
-                'row_type': 'parent' if parent_rows.iloc[idx] else 'data',
-                'data': row.to_dict()
-            })
-        
-        return category, headers, structured_data
+        return json_data
         
     except Exception as e:
-        raise Exception(f"Error processing data: {str(e)}")
+        raise Exception(f"Error converting to JSON: {str(e)}")
 
-def create_excel(category, headers, structured_data):
-    """Create formatted Excel file with consistent styling"""
+def create_excel_from_json(json_data):
+    """Create clean tabular Excel from JSON data"""
     output = io.BytesIO()
     
     try:
@@ -77,9 +104,17 @@ def create_excel(category, headers, structured_data):
             workbook = writer.book
             worksheet = workbook.create_sheet('Sheet1')
             
-            # Write headers in row 1
+            # Headers
+            headers = ['Name/Term', 'LGD', '% RR Used', '% AGG Used', 'Used', 
+                      'Available', 'Total Exposure', '% TE of RR', '% TE of AGG']
+            
+            # Write category in row 1
+            worksheet.cell(row=1, column=1, value=json_data["category"])
+            worksheet.cell(row=1, column=1).font = Font(bold=True)
+            
+            # Write headers in row 2
             for col, header in enumerate(headers, 1):
-                cell = worksheet.cell(row=1, column=col, value=header)
+                cell = worksheet.cell(row=2, column=col, value=header)
                 cell.font = Font(bold=True)
                 cell.alignment = Alignment(horizontal='center')
             
@@ -92,45 +127,63 @@ def create_excel(category, headers, structured_data):
                 bottom=Side(style='thin')
             )
             
-            # Write data starting from row 2
-            current_row = 2
-            for item in structured_data:
-                row_data = item['data']
+            # Write data
+            current_row = 3
+            for entry in json_data["entries"]:
+                # Write parent name if exists
+                if entry["name"]:
+                    cell = worksheet.cell(row=current_row, column=1, value=entry["name"])
+                    cell.font = Font(bold=True)
+                    cell.fill = yellow_fill
+                    current_row += 1
                 
-                for col, header in enumerate(headers, 1):
-                    cell = worksheet.cell(row=current_row, column=col, value=row_data[header])
-                    
-                    # Apply styling
-                    if item['row_type'] == 'parent':
-                        cell.fill = yellow_fill
-                        cell.font = Font(bold=True)
-                    
-                    # Format numbers and percentages
-                    if header.startswith('%'):
-                        if isinstance(row_data[header], (int, float)):
-                            cell.number_format = '0.00%'
-                            cell.value = row_data[header] / 100 if row_data[header] is not None else None
-                    elif header in ['Used', 'Available', 'Total Exposure']:
-                        if isinstance(row_data[header], (int, float)):
-                            cell.number_format = '#,##0'
-                    
-                    # Alignment
-                    if header == 'Name/Term':
-                        cell.alignment = Alignment(horizontal='left')
-                    elif header == 'LGD':
-                        cell.alignment = Alignment(horizontal='center')
-                    else:
-                        cell.alignment = Alignment(horizontal='right')
-                    
-                    cell.border = thin_border
+                # Write main entry
+                if entry["term"]:
+                    worksheet.cell(row=current_row, column=1, value=entry["term"])
+                    worksheet.cell(row=current_row, column=2, value=entry["lgd"])
+                    metrics = entry["metrics"]
+                    worksheet.cell(row=current_row, column=3, value=f"{metrics['percentRRUsed']:.2f}%" if metrics.get('percentRRUsed') else "")
+                    worksheet.cell(row=current_row, column=4, value=f"{metrics['percentAGGUsed']:.2f}%" if metrics.get('percentAGGUsed') else "")
+                    worksheet.cell(row=current_row, column=5, value=metrics.get('used', ""))
+                    worksheet.cell(row=current_row, column=6, value=metrics.get('available', ""))
+                    worksheet.cell(row=current_row, column=7, value=metrics.get('totalExposure', ""))
+                    worksheet.cell(row=current_row, column=8, value=f"{metrics['percentTERR']:.2f}%" if metrics.get('percentTERR') else "")
+                    worksheet.cell(row=current_row, column=9, value=f"{metrics['percentTEAGG']:.2f}%" if metrics.get('percentTEAGG') else "")
+                    current_row += 1
                 
-                current_row += 1
+                # Write additional entries if they exist
+                for sub_entry in entry.get("entries", []):
+                    worksheet.cell(row=current_row, column=1, value=sub_entry["term"])
+                    worksheet.cell(row=current_row, column=2, value=sub_entry["lgd"])
+                    metrics = sub_entry["metrics"]
+                    worksheet.cell(row=current_row, column=3, value=f"{metrics['percentRRUsed']:.2f}%" if metrics.get('percentRRUsed') else "")
+                    worksheet.cell(row=current_row, column=4, value=f"{metrics['percentAGGUsed']:.2f}%" if metrics.get('percentAGGUsed') else "")
+                    worksheet.cell(row=current_row, column=5, value=metrics.get('used', ""))
+                    worksheet.cell(row=current_row, column=6, value=metrics.get('available', ""))
+                    worksheet.cell(row=current_row, column=7, value=metrics.get('totalExposure', ""))
+                    worksheet.cell(row=current_row, column=8, value=f"{metrics['percentTERR']:.2f}%" if metrics.get('percentTERR') else "")
+                    worksheet.cell(row=current_row, column=9, value=f"{metrics['percentTEAGG']:.2f}%" if metrics.get('percentTEAGG') else "")
+                    current_row += 1
             
             # Set column widths
             worksheet.column_dimensions['A'].width = 40  # Name/Term
             worksheet.column_dimensions['B'].width = 10  # LGD
             for i in range(3, len(headers) + 1):
                 worksheet.column_dimensions[get_column_letter(i)].width = 15
+            
+            # Apply borders and alignment to data range
+            for row in worksheet.iter_rows(min_row=2, max_row=current_row-1, min_col=1, max_col=len(headers)):
+                for cell in row:
+                    cell.border = thin_border
+                    if isinstance(cell.value, str) and '%' in str(cell.value):
+                        cell.alignment = Alignment(horizontal='right')
+                    elif isinstance(cell.value, (int, float)):
+                        cell.alignment = Alignment(horizontal='right')
+                        cell.number_format = '#,##0'
+                    elif cell.column == 2:  # LGD column
+                        cell.alignment = Alignment(horizontal='center')
+                    else:
+                        cell.alignment = Alignment(horizontal='left')
         
         output.seek(0)
         return output
@@ -165,11 +218,15 @@ def main():
                         # Read sheet without header
                         df_raw = pd.read_excel(uploaded_file, sheet_name=sheet_name, header=None)
                         
-                        # Process data using fixed positions
-                        category, headers, structured_data = process_pd_data(df_raw)
+                        # Convert to JSON structure
+                        json_data = process_excel_to_json(df_raw)
                         
-                        # Create formatted Excel
-                        excel_data = create_excel(category, headers, structured_data)
+                        # Display JSON for verification
+                        st.write(f"JSON structure for sheet '{sheet_name}':")
+                        st.json(json_data)
+                        
+                        # Create clean Excel from JSON
+                        excel_data = create_excel_from_json(json_data)
                         
                         # Provide download button
                         st.download_button(
@@ -179,24 +236,9 @@ def main():
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                         )
                         
-                        # Show preview
-                        preview_df = pd.DataFrame([item['data'] for item in structured_data])
-                        st.dataframe(preview_df)
-                        
                     except Exception as e:
-                        error_msg = str(e)
-                        st.error(f"Error processing sheet '{sheet_name}': {error_msg}")
-                        
-                        # Provide more specific guidance based on the error
-                        if "not have enough rows" in error_msg:
-                            st.write(f"Sheet '{sheet_name}' appears to be empty or doesn't have enough rows. Please ensure:")
-                            st.write("1. The PD is in cell A2")
-                            st.write("2. Headers are in row 3")
-                            st.write("3. Data starts from row 4")
-                        elif "No PD found in cell A2" in error_msg:
-                            st.write(f"Could not find PD information in cell A2 of sheet '{sheet_name}'. Please check the format.")
-                        else:
-                            st.write(f"Please ensure sheet '{sheet_name}' follows the expected format.")
+                        st.error(f"Error processing sheet '{sheet_name}': {str(e)}")
+                        st.write(f"Please ensure sheet '{sheet_name}' follows the expected format.")
                         
         except Exception as e:
             st.error(f"Error reading Excel file: {str(e)}")
