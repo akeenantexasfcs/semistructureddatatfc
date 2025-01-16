@@ -10,97 +10,107 @@ import io
 from openpyxl.styles import PatternFill, Font, Border, Side, Alignment
 from openpyxl.utils import get_column_letter
 
-def process_excel_sheet(df):
-    """Transform raw Excel data into structured format"""
+def safe_numeric_convert(value):
+    """Safely convert a value to numeric, returning None if not possible"""
     try:
-        # Find quality row
-        quality_row = None
+        if pd.isna(value):
+            return None
+        float_val = float(str(value).replace(',', ''))
+        return float_val
+    except (ValueError, TypeError):
+        return None
+
+def process_pd_data(df):
+    """Process the PD sheet and return structured data"""
+    try:
+        # Find the quality category
+        category = None
         for idx, row in df.iterrows():
             if 'Quality' in str(row.iloc[0]):
-                quality_row = idx
+                category = row.iloc[0]
                 break
-                
-        if quality_row is None:
-            raise ValueError("Could not find Quality category")
-            
-        category = df.iloc[quality_row, 0]
+
+        # Get the header row index (where "LGD" appears)
+        header_idx = None
+        for idx, row in df.iterrows():
+            if 'LGD' in str(row.iloc[1]):
+                header_idx = idx
+                break
+
+        if header_idx is None:
+            raise ValueError("Could not find header row with 'LGD'")
+
+        # Set up headers
+        headers = ['Name/Term', 'LGD', '% Used of RR', '% Used of AGG', 
+                  'Used', 'Available', 'Total Exposure', '% TE of RR', '% TE of AGG']
         
-        # Initialize structured data list
-        structured_data = []
-        current_parent = None
+        # Process data rows
+        processed_data = []
+        data_rows = df.iloc[header_idx+1:].values
         
-        # Start processing after header row
-        header_row = quality_row + 1
-        data_start = header_row + 1
-        
-        for idx in range(data_start, len(df)):
-            row = df.iloc[idx]
-            
-            # Skip empty rows
-            if pd.isna(row.iloc[0]) and pd.isna(row.iloc[1]):
+        for row in data_rows:
+            # Skip completely empty rows
+            if all(pd.isna(cell) for cell in row):
                 continue
                 
-            # Check if this is a parent row (company name)
-            if not pd.isna(row.iloc[0]) and pd.isna(row.iloc[1]):
-                current_parent = str(row.iloc[0]).strip()
-                # Add parent row
-                structured_data.append({
-                    'Name/Term': current_parent,
-                    'LGD': '',
-                    '% Used of RR': None,
-                    '% Used of AGG': None,
-                    'Used': None,
-                    'Available': None,
-                    'Total Exposure': None,
-                    '% TE of RR': None,
-                    '% TE of AGG': None,
-                    'is_parent': True
+            # Check if this is a title/parent row
+            if pd.notna(row[0]) and (pd.isna(row[1]) or str(row[1]).strip() == ''):
+                processed_data.append({
+                    'row_type': 'parent',
+                    'data': {
+                        'Name/Term': str(row[0]).strip(),
+                        'LGD': '',
+                        '% Used of RR': '',
+                        '% Used of AGG': '',
+                        'Used': '',
+                        'Available': '',
+                        'Total Exposure': '',
+                        '% TE of RR': '',
+                        '% TE of AGG': ''
+                    }
                 })
-            
-            # Check if this is a data row
-            elif not pd.isna(row.iloc[1]):
-                term = str(row.iloc[0]).strip() if not pd.isna(row.iloc[0]) else ''
-                structured_data.append({
-                    'Name/Term': term,
-                    'LGD': str(row.iloc[1]).strip(),
-                    '% Used of RR': row.iloc[2],
-                    '% Used of AGG': row.iloc[3],
-                    'Used': row.iloc[4],
-                    'Available': row.iloc[5],
-                    'Total Exposure': row.iloc[6],
-                    '% TE of RR': row.iloc[7],
-                    '% TE of AGG': row.iloc[8],
-                    'is_parent': False
+            # Handle regular data rows
+            elif pd.notna(row[1]):
+                processed_data.append({
+                    'row_type': 'data',
+                    'data': {
+                        'Name/Term': str(row[0]).strip() if pd.notna(row[0]) else '',
+                        'LGD': str(row[1]).strip(),
+                        '% Used of RR': safe_numeric_convert(row[2]),
+                        '% Used of AGG': safe_numeric_convert(row[3]),
+                        'Used': safe_numeric_convert(row[4]),
+                        'Available': safe_numeric_convert(row[5]),
+                        'Total Exposure': safe_numeric_convert(row[6]),
+                        '% TE of RR': safe_numeric_convert(row[7]),
+                        '% TE of AGG': safe_numeric_convert(row[8])
+                    }
                 })
-                
-        return category, pd.DataFrame(structured_data)
-    
+        
+        return category, headers, processed_data
     except Exception as e:
-        st.error(f"Error processing sheet: {str(e)}")
-        raise
+        raise Exception(f"Error processing data: {str(e)}")
 
-def create_styled_excel(category, df):
-    """Create styled Excel file"""
+def create_excel(category, headers, processed_data):
+    """Create formatted Excel file"""
     output = io.BytesIO()
     
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        # Write DataFrame without index
-        df_to_write = df.drop('is_parent', axis=1)
-        df_to_write.to_excel(writer, index=False, sheet_name='Sheet1')
-        
+        # Create workbook and worksheet
         workbook = writer.book
-        worksheet = writer.sheets['Sheet1']
+        worksheet = workbook.create_sheet('Sheet1')
         
-        # Add title row
-        worksheet.insert_rows(1)
-        worksheet['A1'] = category
-        worksheet['A1'].font = Font(bold=True)
+        # Write category
+        worksheet.cell(row=1, column=1, value=category)
+        worksheet.cell(row=1, column=1).font = Font(bold=True)
         
-        # Define styles
-        yellow_fill = PatternFill(start_color='FFEB9C',
-                                end_color='FFEB9C',
-                                fill_type='solid')
+        # Write headers
+        for col, header in enumerate(headers, 1):
+            cell = worksheet.cell(row=2, column=col, value=header)
+            cell.font = Font(bold=True)
+            cell.alignment = Alignment(horizontal='center')
         
+        # Styles
+        yellow_fill = PatternFill(start_color='FFEB9C', end_color='FFEB9C', fill_type='solid')
         thin_border = Border(
             left=Side(style='thin'),
             right=Side(style='thin'),
@@ -108,59 +118,46 @@ def create_styled_excel(category, df):
             bottom=Side(style='thin')
         )
         
-        # Set alignments
-        center_aligned = Alignment(horizontal='center', vertical='center')
-        right_aligned = Alignment(horizontal='right', vertical='center')
-        left_aligned = Alignment(horizontal='left', vertical='center')
-        
-        # Format cells
-        for row_idx, row in enumerate(df.itertuples(), start=3):
-            # Format parent rows
-            if row.is_parent:
-                for col in range(1, worksheet.max_column + 1):
-                    cell = worksheet.cell(row=row_idx, column=col)
+        # Write data
+        current_row = 3
+        for item in processed_data:
+            row_data = item['data']
+            
+            for col, header in enumerate(headers, 1):
+                cell = worksheet.cell(row=current_row, column=col, value=row_data[header])
+                
+                # Apply styling
+                if item['row_type'] == 'parent':
                     cell.fill = yellow_fill
                     cell.font = Font(bold=True)
-            else:
-                # Name/Term - left aligned
-                worksheet.cell(row=row_idx, column=1).alignment = left_aligned
-                
-                # LGD - center aligned
-                worksheet.cell(row=row_idx, column=2).alignment = center_aligned
-                
-                # Numbers and percentages - right aligned
-                for col in range(3, worksheet.max_column + 1):
-                    cell = worksheet.cell(row=row_idx, column=col)
-                    cell.alignment = right_aligned
-                    
-                    # Format percentages
-                    if col in [3, 4, 8, 9]:  # Percentage columns
-                        if cell.value:
+                else:
+                    # Format numbers and percentages
+                    if header in ['% Used of RR', '% Used of AGG', '% TE of RR', '% TE of AGG']:
+                        if isinstance(row_data[header], (int, float)):
                             cell.number_format = '0.00%'
-                            cell.value = float(cell.value) / 100  # Convert to decimal
-                    
-                    # Format numbers
-                    if col in [5, 6, 7]:  # Number columns
-                        if cell.value:
+                            cell.value = row_data[header] / 100
+                    elif header in ['Used', 'Available', 'Total Exposure']:
+                        if isinstance(row_data[header], (int, float)):
                             cell.number_format = '#,##0'
-        
-        # Apply borders and set header row
-        header_row = worksheet[2]
-        for cell in header_row:
-            cell.font = Font(bold=True)
-            cell.alignment = center_aligned
-            
-        # Apply borders to all cells
-        for row in worksheet.iter_rows():
-            for cell in row:
+                
+                # Alignment
+                if header == 'Name/Term':
+                    cell.alignment = Alignment(horizontal='left')
+                elif header == 'LGD':
+                    cell.alignment = Alignment(horizontal='center')
+                else:
+                    cell.alignment = Alignment(horizontal='right')
+                
                 cell.border = thin_border
+            
+            current_row += 1
         
         # Set column widths
-        worksheet.column_dimensions['A'].width = 40  # Name/Term
-        worksheet.column_dimensions['B'].width = 10  # LGD
-        for col in range(3, worksheet.max_column + 1):
-            worksheet.column_dimensions[get_column_letter(col)].width = 15
-    
+        worksheet.column_dimensions['A'].width = 40
+        worksheet.column_dimensions['B'].width = 10
+        for i in range(3, len(headers) + 1):
+            worksheet.column_dimensions[get_column_letter(i)].width = 15
+
     output.seek(0)
     return output
 
@@ -185,24 +182,29 @@ def main():
             
             if st.button("Process Selected Sheets"):
                 for sheet_name in selected_sheets:
+                    # Read sheet without header
                     df = pd.read_excel(uploaded_file, sheet_name=sheet_name, header=None)
-                    category, processed_df = process_excel_sheet(df)
                     
-                    # Show preview
-                    st.subheader(f"Preview: {sheet_name}")
-                    st.dataframe(processed_df.drop('is_parent', axis=1))
+                    # Process data
+                    category, headers, processed_data = process_pd_data(df)
                     
-                    # Create download button
-                    excel_data = create_styled_excel(category, processed_df)
+                    # Create Excel file
+                    excel_data = create_excel(category, headers, processed_data)
+                    
+                    # Download button
                     st.download_button(
-                        label=f"Download {sheet_name} Excel",
+                        label=f"Download {sheet_name}",
                         data=excel_data,
                         file_name=f"{sheet_name}_formatted.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                     )
-        
+                    
+                    # Show preview
+                    preview_df = pd.DataFrame([item['data'] for item in processed_data])
+                    st.dataframe(preview_df)
+                    
         except Exception as e:
-            st.error(f"Error processing file: {str(e)}")
+            st.error(f"Error: {str(e)}")
             st.write("Please make sure the Excel file follows the expected format.")
 
 if __name__ == "__main__":
