@@ -136,10 +136,10 @@ def create_excel_from_json(json_data):
                     current_row += 1
                 
                 # Write all sub-entries
-                for sub_entry in entry["entries"]:
+                for sub_entry in entry.get("entries", []):
                     # Indent term if there's a parent
-                    term_cell = worksheet.cell(row=current_row, column=1, 
-                                            value=("  " if entry["name"] else "") + sub_entry["term"])
+                    term_value = ("  " if entry["name"] else "") + sub_entry["term"]
+                    term_cell = worksheet.cell(row=current_row, column=1, value=term_value)
                     term_cell.alignment = Alignment(horizontal='left')
                     
                     # LGD
