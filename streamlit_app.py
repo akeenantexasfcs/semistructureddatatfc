@@ -158,12 +158,6 @@ def create_excel_from_json(json_data):
                 worksheet.append(row_data)
                 current_row += 1
 
-        # Removed lines that caused "At least one sheet must be visible" error:
-        # -----------------------------------------------------------
-        # if not workbook.sheetnames:
-        #     workbook.create_sheet(title="Sheet1")
-        # -----------------------------------------------------------
-
         # Adjust column widths
         for col_num in range(1, 10):
             worksheet.column_dimensions[get_column_letter(col_num)].width = 15
