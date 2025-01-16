@@ -9,7 +9,7 @@ import pandas as pd
 import io
 import json
 import openpyxl
-from openpyxl.styles import PatternFill, Font, Border, Side, Alignment
+from openpyxl.styles import PatternFill, Font, Alignment
 from openpyxl.utils import get_column_letter
 
 def safe_numeric_convert(value):
@@ -106,6 +106,10 @@ def create_excel_from_json(json_data):
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         workbook = writer.book
+
+        # Ensure there is at least one visible sheet
+        if not workbook.active:
+            workbook.create_sheet(title="Sheet1")
         worksheet = workbook.active
         worksheet.title = "Sheet1"
 
@@ -161,6 +165,10 @@ def create_excel_from_json(json_data):
         # Adjust column widths
         for col_num in range(1, 10):
             worksheet.column_dimensions[get_column_letter(col_num)].width = 15
+
+        # Ensure all sheets are visible
+        for sheet in workbook.sheetnames:
+            workbook[sheet].sheet_state = 'visible'
 
     output.seek(0)
     return output
