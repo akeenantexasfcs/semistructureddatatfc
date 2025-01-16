@@ -26,27 +26,17 @@ def process_pd_data(df_raw):
     """Process the PD sheet using fixed positions instead of searching"""
     try:
         # Check if DataFrame has enough rows
-        if df_raw.shape[0] < 2:
-            raise ValueError("Excel sheet does not have enough rows. Expected PD in cell A2.")
+        if df_raw.shape[0] < 1:
+            raise ValueError("Excel sheet appears to be empty.")
             
-        # 1. Get category from cell A2 (index 1,0)
-        try:
-            category = str(df_raw.iloc[1, 0]).strip()
-            if pd.isna(category) or category == "":
-                raise ValueError("No PD found in cell A2")
-        
-        # 2. Get headers from row 2 (index 2)
+        # 1. Get headers from row 1 (index 0)
         headers = [
             'Name/Term', 'LGD', '% Used of RR', '% Used of AGG',
             'Used', 'Available', 'Total Exposure', '% TE of RR', '% TE of AGG'
         ]
         
-        # Check if we have enough rows for data
-        if df_raw.shape[0] < 4:  # Need at least 4 rows (0-based index: 0,1,2,3)
-            raise ValueError("Excel sheet does not have enough rows for data processing")
-            
-        # 3. Create DataFrame from row 3 onwards
-        df_data = df_raw.iloc[3:].copy()
+        # 2. Create DataFrame from row 1 onwards (now it's all data)
+        df_data = df_raw.iloc[0:].copy()
         df_data.columns = headers
         
         # 4. Drop completely empty rows
@@ -74,7 +64,7 @@ def process_pd_data(df_raw):
             })
         
         return category, headers, structured_data
-    
+        
     except Exception as e:
         raise Exception(f"Error processing data: {str(e)}")
 
@@ -82,71 +72,71 @@ def create_excel(category, headers, structured_data):
     """Create formatted Excel file with consistent styling"""
     output = io.BytesIO()
     
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        workbook = writer.book
-        worksheet = workbook.create_sheet('Sheet1')
-        
-        # Write category in A2
-        worksheet.cell(row=2, column=1, value=category)
-        worksheet.cell(row=2, column=1).font = Font(bold=True)
-        
-        # Write headers in row 3
-        for col, header in enumerate(headers, 1):
-            cell = worksheet.cell(row=3, column=col, value=header)
-            cell.font = Font(bold=True)
-            cell.alignment = Alignment(horizontal='center')
-        
-        # Styles
-        yellow_fill = PatternFill(start_color='FFEB9C', end_color='FFEB9C', fill_type='solid')
-        thin_border = Border(
-            left=Side(style='thin'),
-            right=Side(style='thin'),
-            top=Side(style='thin'),
-            bottom=Side(style='thin')
-        )
-        
-        # Write data starting from row 4
-        current_row = 4
-        for item in structured_data:
-            row_data = item['data']
+    try:
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            workbook = writer.book
+            worksheet = workbook.create_sheet('Sheet1')
             
+            # Write headers in row 1
             for col, header in enumerate(headers, 1):
-                cell = worksheet.cell(row=current_row, column=col, value=row_data[header])
-                
-                # Apply styling
-                if item['row_type'] == 'parent':
-                    cell.fill = yellow_fill
-                    cell.font = Font(bold=True)
-                
-                # Format numbers and percentages
-                if header.startswith('%'):
-                    if isinstance(row_data[header], (int, float)):
-                        cell.number_format = '0.00%'
-                        cell.value = row_data[header] / 100 if row_data[header] is not None else None
-                elif header in ['Used', 'Available', 'Total Exposure']:
-                    if isinstance(row_data[header], (int, float)):
-                        cell.number_format = '#,##0'
-                
-                # Alignment
-                if header == 'Name/Term':
-                    cell.alignment = Alignment(horizontal='left')
-                elif header == 'LGD':
-                    cell.alignment = Alignment(horizontal='center')
-                else:
-                    cell.alignment = Alignment(horizontal='right')
-                
-                cell.border = thin_border
+                cell = worksheet.cell(row=1, column=col, value=header)
+                cell.font = Font(bold=True)
+                cell.alignment = Alignment(horizontal='center')
             
-            current_row += 1
+            # Styles
+            yellow_fill = PatternFill(start_color='FFEB9C', end_color='FFEB9C', fill_type='solid')
+            thin_border = Border(
+                left=Side(style='thin'),
+                right=Side(style='thin'),
+                top=Side(style='thin'),
+                bottom=Side(style='thin')
+            )
+            
+            # Write data starting from row 2
+            current_row = 2
+            for item in structured_data:
+                row_data = item['data']
+                
+                for col, header in enumerate(headers, 1):
+                    cell = worksheet.cell(row=current_row, column=col, value=row_data[header])
+                    
+                    # Apply styling
+                    if item['row_type'] == 'parent':
+                        cell.fill = yellow_fill
+                        cell.font = Font(bold=True)
+                    
+                    # Format numbers and percentages
+                    if header.startswith('%'):
+                        if isinstance(row_data[header], (int, float)):
+                            cell.number_format = '0.00%'
+                            cell.value = row_data[header] / 100 if row_data[header] is not None else None
+                    elif header in ['Used', 'Available', 'Total Exposure']:
+                        if isinstance(row_data[header], (int, float)):
+                            cell.number_format = '#,##0'
+                    
+                    # Alignment
+                    if header == 'Name/Term':
+                        cell.alignment = Alignment(horizontal='left')
+                    elif header == 'LGD':
+                        cell.alignment = Alignment(horizontal='center')
+                    else:
+                        cell.alignment = Alignment(horizontal='right')
+                    
+                    cell.border = thin_border
+                
+                current_row += 1
+            
+            # Set column widths
+            worksheet.column_dimensions['A'].width = 40  # Name/Term
+            worksheet.column_dimensions['B'].width = 10  # LGD
+            for i in range(3, len(headers) + 1):
+                worksheet.column_dimensions[get_column_letter(i)].width = 15
         
-        # Set column widths
-        worksheet.column_dimensions['A'].width = 40  # Name/Term
-        worksheet.column_dimensions['B'].width = 10  # LGD
-        for i in range(3, len(headers) + 1):
-            worksheet.column_dimensions[get_column_letter(i)].width = 15
-    
-    output.seek(0)
-    return output
+        output.seek(0)
+        return output
+        
+    except Exception as e:
+        raise Exception(f"Error creating Excel file: {str(e)}")
 
 def main():
     st.title("Excel PD Sheet Processor")
@@ -171,41 +161,46 @@ def main():
             
             if st.button("Process Selected Sheets"):
                 for sheet_name in selected_sheets:
-                    # Read sheet without header
-                    df_raw = pd.read_excel(uploaded_file, sheet_name=sheet_name, header=None)
-                    
-                    # Process data using fixed positions
-                    category, headers, structured_data = process_pd_data(df_raw)
-                    
-                    # Create formatted Excel
-                    excel_data = create_excel(category, headers, structured_data)
-                    
-                    # Provide download button
-                    st.download_button(
-                        label=f"Download {sheet_name}",
-                        data=excel_data,
-                        file_name=f"{sheet_name}_formatted.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                    )
-                    
-                    # Show preview
-                    preview_df = pd.DataFrame([item['data'] for item in structured_data])
-                    st.dataframe(preview_df)
-                    
+                    try:
+                        # Read sheet without header
+                        df_raw = pd.read_excel(uploaded_file, sheet_name=sheet_name, header=None)
+                        
+                        # Process data using fixed positions
+                        category, headers, structured_data = process_pd_data(df_raw)
+                        
+                        # Create formatted Excel
+                        excel_data = create_excel(category, headers, structured_data)
+                        
+                        # Provide download button
+                        st.download_button(
+                            label=f"Download {sheet_name}",
+                            data=excel_data,
+                            file_name=f"{sheet_name}_formatted.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                        )
+                        
+                        # Show preview
+                        preview_df = pd.DataFrame([item['data'] for item in structured_data])
+                        st.dataframe(preview_df)
+                        
+                    except Exception as e:
+                        error_msg = str(e)
+                        st.error(f"Error processing sheet '{sheet_name}': {error_msg}")
+                        
+                        # Provide more specific guidance based on the error
+                        if "not have enough rows" in error_msg:
+                            st.write(f"Sheet '{sheet_name}' appears to be empty or doesn't have enough rows. Please ensure:")
+                            st.write("1. The PD is in cell A2")
+                            st.write("2. Headers are in row 3")
+                            st.write("3. Data starts from row 4")
+                        elif "No PD found in cell A2" in error_msg:
+                            st.write(f"Could not find PD information in cell A2 of sheet '{sheet_name}'. Please check the format.")
+                        else:
+                            st.write(f"Please ensure sheet '{sheet_name}' follows the expected format.")
+                        
         except Exception as e:
-            error_msg = str(e)
-            st.error(f"Error: {error_msg}")
-            
-            # Provide more specific guidance based on the error
-            if "not have enough rows" in error_msg:
-                st.write("The Excel sheet appears to be empty or doesn't have enough rows. Please ensure:")
-                st.write("1. The PD is in cell A2")
-                st.write("2. Headers are in row 3")
-                st.write("3. Data starts from row 4")
-            elif "No PD found in cell A2" in error_msg:
-                st.write("Could not find PD information in cell A2. Please check the sheet format.")
-            else:
-                st.write("Please ensure the Excel file follows the expected format with PD in cell A2.")
+            st.error(f"Error reading Excel file: {str(e)}")
+            st.write("Please ensure you've uploaded a valid Excel file (.xlsx or .xls).")
 
 if __name__ == "__main__":
     main()
